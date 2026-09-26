@@ -343,3 +343,28 @@ describe('ElectrumClient p2pmsg request timeouts', () => {
     await Promise.all([quote, list]);
   });
 });
+
+describe('ElectrumClient getBlockTransactionKeysRange', () => {
+  const tx = (h: string) => [h, { vin: [], vout: [] }];
+
+  it('resumes after the blocks actually returned, not a larger next_height', async () => {
+    const client = new ElectrumClient({ host: 'localhost', port: 50001, ssl: false });
+    // Buggy server: returned 3 blocks from 100 but advanced next_height to 110,
+    // which would silently skip blocks 103..109.
+    (client as any).call = vi.fn().mockResolvedValue({
+      blocks: [[tx('a')], [tx('b')], [tx('c')]],
+      next_height: 110,
+    });
+    const res = await client.getBlockTransactionKeysRange(100);
+    expect(res.blocks.map((b) => b.height)).toEqual([100, 101, 102]);
+    expect(res.nextHeight).toBe(103);
+  });
+
+  it('keeps the server next_height when no blocks are returned (past tip)', async () => {
+    const client = new ElectrumClient({ host: 'localhost', port: 50001, ssl: false });
+    (client as any).call = vi.fn().mockResolvedValue({ blocks: [], next_height: 500 });
+    const res = await client.getBlockTransactionKeysRange(500);
+    expect(res.blocks).toEqual([]);
+    expect(res.nextHeight).toBe(500);
+  });
+});

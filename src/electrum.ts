@@ -716,9 +716,15 @@ export class ElectrumClient {
       }
     }
 
+    // Blocks are positional (block i is startHeight + i), so the only resume
+    // point consistent with what we actually received is startHeight +
+    // blocks.length. Never trust a larger next_height: older electrumx servers
+    // advanced it past blocks they dropped on a size-limited page, which made
+    // wallets silently skip up to ~100 blocks (and any outputs in them).
     return {
       blocks,
-      nextHeight: result.next_height || startHeight + blocks.length,
+      nextHeight:
+        blocks.length > 0 ? startHeight + blocks.length : result.next_height || startHeight,
     };
   }
 
