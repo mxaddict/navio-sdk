@@ -20,51 +20,64 @@ import { TransactionKeysSync, SyncState } from './tx-keys-sync';
 import { WalletDB } from './wallet-db';
 import { SyncProvider, ChainTip, BlockHeadersResult } from './sync-provider';
 import type { BlockTransactionKeys, TransactionKeys } from './electrum';
+import type { StoreOutputParams } from './wallet-db.interface';
+import { sha256 } from '@noble/hashes/sha256';
 
-// Mock sync provider for testing
+/** Block hash as the SDK computes it: double SHA-256 of the header, byte-reversed. */
+function hashHeader(headerHex: string): string {
+  return Buffer.from(sha256(sha256(Buffer.from(headerHex, 'hex')))).reverse().toString('hex');
+}
+
+/** The header the mock serves at a height nobody overrode (80 bytes = 160 hex chars). */
+function defaultHeader(height: number): string {
+  return height.toString(16).padStart(160, '0');
+}
+
+/** A header for `height` on a competing branch, distinct from defaultHeader(). */
+function branchHeader(height: number, branch: number = 1): string {
+  return branch.toString(16).padStart(2, '0').repeat(76) + height.toString(16).padStart(8, '0');
+}
+
+type MockSyncProvider = SyncProvider & { setChainTip(height: number): void };
+
+// Mock sync provider for testing. `blockHeaders` and `blockTxKeys` are read on
+// every call, so a test can rewrite them between syncs to simulate a reorg.
 function createMockSyncProvider(options: {
   chainTipHeight?: number;
   blockHeaders?: Map<number, string>;
-  blockHashes?: Map<number, string>;
-}): SyncProvider {
-  const chainTipHeight = options.chainTipHeight ?? 1000;
+  blockTxKeys?: Map<number, TransactionKeys[]>;
+}): MockSyncProvider {
+  let chainTipHeight = options.chainTipHeight ?? 1000;
   const blockHeaders = options.blockHeaders ?? new Map();
-  const blockHashes = options.blockHashes ?? new Map();
-
-  // Generate default headers/hashes if not provided
-  for (let i = 0; i <= chainTipHeight; i++) {
-    if (!blockHeaders.has(i)) {
-      // Generate a simple unique header (80 bytes = 160 hex chars)
-      const headerHex = i.toString(16).padStart(160, '0');
-      blockHeaders.set(i, headerHex);
-    }
-  }
+  const blockTxKeys = options.blockTxKeys ?? new Map();
+  const headerAt = (height: number): string => blockHeaders.get(height) ?? defaultHeader(height);
 
   return {
     type: 'custom' as const,
+    setChainTip: (height: number) => {
+      chainTipHeight = height;
+    },
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn(),
     isConnected: vi.fn().mockReturnValue(true),
-    getChainTipHeight: vi.fn().mockResolvedValue(chainTipHeight),
-    getChainTip: vi.fn().mockResolvedValue({ height: chainTipHeight, hash: blockHashes.get(chainTipHeight) || 'mock-hash' } as ChainTip),
-    getBlockHeader: vi.fn().mockImplementation((height: number) => {
-      return Promise.resolve(blockHeaders.get(height) || '00'.repeat(80));
-    }),
+    getChainTipHeight: vi.fn().mockImplementation(() => Promise.resolve(chainTipHeight)),
+    getChainTip: vi.fn().mockImplementation(() =>
+      Promise.resolve({ height: chainTipHeight, hash: hashHeader(headerAt(chainTipHeight)) } as ChainTip)
+    ),
+    getBlockHeader: vi.fn().mockImplementation((height: number) => Promise.resolve(headerAt(height))),
     getBlockHeaders: vi.fn().mockImplementation((startHeight: number, count: number) => {
       let hex = '';
       for (let i = 0; i < count; i++) {
-        const h = startHeight + i;
-        hex += blockHeaders.get(h) || '00'.repeat(80);
+        hex += headerAt(startHeight + i);
       }
       return Promise.resolve({ count, hex, max: 2016 } as BlockHeadersResult);
     }),
     getBlockTransactionKeysRange: vi.fn().mockImplementation((startHeight: number) => {
-      // Return empty blocks for testing
       const blocks: BlockTransactionKeys[] = [];
       for (let i = 0; i < 10 && startHeight + i <= chainTipHeight; i++) {
         blocks.push({
           height: startHeight + i,
-          txKeys: [],
+          txKeys: blockTxKeys.get(startHeight + i) ?? [],
         });
       }
       return Promise.resolve({
@@ -299,80 +312,96 @@ describe('TransactionKeysSync', () => {
   });
 
   describe('block reversion', () => {
-    it('should delete outputs created in reverted blocks', async () => {
-      syncProvider = createMockSyncProvider({ chainTipHeight: 100 });
-      syncManager = new TransactionKeysSync(walletDB, syncProvider);
+    function output(outputHash: string, blockHeight: number, spent?: { txHash: string; height: number }): StoreOutputParams {
+      return {
+        outputHash,
+        txHash: `tx-${outputHash}`,
+        outputIndex: 0,
+        blockHeight,
+        outputData: '',
+        amount: 1_000_000,
+        gamma: '01',
+        memo: null,
+        tokenId: null,
+        blindingKey: '02',
+        ephemeralKey: null,
+        spendingKey: '03',
+        isSpent: spent !== undefined,
+        spentTxHash: spent?.txHash ?? null,
+        spentBlockHeight: spent?.height ?? null,
+        txType: 'received',
+        timestamp: 0,
+      };
+    }
+
+    async function outputRow(outputHash: string): Promise<{ isSpent: number; spentTxHash: string | null; spentBlockHeight: number | null } | null> {
+      const result = await walletDB.getAdapter().exec(
+        `SELECT is_spent, spent_tx_hash, spent_block_height FROM wallet_outputs WHERE output_hash = '${outputHash}'`
+      );
+      if (result.length === 0) return null;
+      const [isSpent, spentTxHash, spentBlockHeight] = result[0].values[0] as [number, string | null, number | null];
+      return { isSpent, spentTxHash, spentBlockHeight };
+    }
+
+    /**
+     * Sync a wallet to height 60, give it outputs on both sides of a fork at
+     * 58 plus mempool rows, then replace blocks 58..60 and grow the tip to 62.
+     */
+    async function syncThenReorg(): Promise<{ blockHeaders: Map<number, string>; provider: MockSyncProvider }> {
+      const blockHeaders = new Map<number, string>();
+      const provider = createMockSyncProvider({ chainTipHeight: 60, blockHeaders });
+      syncManager = new TransactionKeysSync(walletDB, provider);
       await syncManager.initialize();
+      await syncManager.sync({ startHeight: 0 });
+      expect(syncManager.getLastSyncedHeight()).toBe(60);
 
-      const db = walletDB.getAdapter();
-      
-      // Insert outputs at different heights
-      await db.run(`
-        INSERT INTO wallet_outputs 
-        (output_hash, tx_hash, output_index, block_height, output_data, amount, is_spent, created_at)
-        VALUES 
-        ('output-at-50', 'tx-50', 0, 50, 'data', 1000000, 0, ?),
-        ('output-at-55', 'tx-55', 0, 55, 'data', 2000000, 0, ?),
-        ('output-at-60', 'tx-60', 0, 60, 'data', 3000000, 0, ?)
-      `, [Date.now(), Date.now(), Date.now()]);
+      await walletDB.storeWalletOutput(output('kept-at-50', 50));
+      await walletDB.storeWalletOutput(output('orphaned-at-58', 58));
+      await walletDB.storeWalletOutput(output('spent-at-59', 40, { txHash: 'orphaned-spend', height: 59 }));
+      await walletDB.storeWalletOutput(output('spent-at-57', 40, { txHash: 'kept-spend', height: 57 }));
+      await walletDB.storeWalletOutput(output('mempool-output', 0));
+      await walletDB.storeWalletOutput(output('spent-in-mempool', 45, { txHash: 'mempool-tx', height: 0 }));
 
-      // Store sync state at height 60
-      await db.run(`
-        INSERT OR REPLACE INTO sync_state (id, last_synced_height, last_synced_hash, total_tx_keys_synced, last_sync_time, chain_tip_at_last_sync)
-        VALUES (0, 60, 'hash-60', 100, ?, 60)
-      `, [Date.now()]);
+      for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
+      provider.setChainTip(62);
+      return { blockHeaders, provider };
+    }
 
-      // Store block hashes
-      await db.run('INSERT INTO block_hashes (height, hash) VALUES (50, ?), (55, ?), (60, ?)', ['hash-50', 'hash-55', 'hash-60']);
+    it('reverts outputs and spends from orphaned blocks and keeps mempool rows', async () => {
+      await syncThenReorg();
 
-      // Verify all outputs exist
-      let result = await db.exec('SELECT COUNT(*) FROM wallet_outputs');
-      expect(result[0].values[0][0]).toBe(3);
+      await syncManager.sync({ stopOnReorg: false });
 
-      // Simulate reorg by directly calling revertBlocks (we access it via sync with handleReorg)
-      // For this test, let's directly manipulate like revertBlocks would
-      await db.run('DELETE FROM wallet_outputs WHERE block_height >= 55');
-      await db.run('DELETE FROM block_hashes WHERE height >= 55');
-
-      // Verify outputs at height >= 55 are deleted
-      result = await db.exec('SELECT COUNT(*) FROM wallet_outputs');
-      expect(result[0].values[0][0]).toBe(1);
-
-      result = await db.exec("SELECT output_hash FROM wallet_outputs");
-      expect(result[0].values[0][0]).toBe('output-at-50');
+      expect(await outputRow('kept-at-50')).not.toBeNull();
+      expect(await outputRow('orphaned-at-58')).toBeNull();
+      expect(await outputRow('spent-at-59')).toEqual({ isSpent: 0, spentTxHash: null, spentBlockHeight: null });
+      expect(await outputRow('spent-at-57')).toEqual({ isSpent: 1, spentTxHash: 'kept-spend', spentBlockHeight: 57 });
+      expect(await outputRow('mempool-output')).not.toBeNull();
+      expect(await outputRow('spent-in-mempool')).toEqual({ isSpent: 1, spentTxHash: 'mempool-tx', spentBlockHeight: 0 });
+      expect(syncManager.getLastSyncedHeight()).toBe(62);
     });
 
-    it('should unspend outputs that were spent in reverted blocks', async () => {
-      syncProvider = createMockSyncProvider({ chainTipHeight: 100 });
-      syncManager = new TransactionKeysSync(walletDB, syncProvider);
-      await syncManager.initialize();
+    it('leaves the wallet untouched when the revert fails part-way', async () => {
+      await syncThenReorg();
+      const stateBefore = await walletDB.loadSyncState();
 
-      const db = walletDB.getAdapter();
-      
-      // Insert an output that was spent at height 55
-      await db.run(`
-        INSERT INTO wallet_outputs 
-        (output_hash, tx_hash, output_index, block_height, output_data, amount, is_spent, spent_tx_hash, spent_block_height, created_at)
-        VALUES ('spent-output', 'original-tx', 0, 40, 'data', 1000000, 1, 'spending-tx', 55, ?)
-      `, [Date.now()]);
+      // Fail the last write of the revert, after the outputs were deleted.
+      const adapter = walletDB.getAdapter();
+      const run = adapter.run.bind(adapter);
+      adapter.run = async (sql: string, params?: any[]) => {
+        if (sql.startsWith('DELETE FROM block_hashes WHERE height >=')) {
+          throw new Error('simulated crash');
+        }
+        return run(sql, params);
+      };
 
-      // Verify output is spent
-      let result = await db.exec("SELECT is_spent, spent_block_height FROM wallet_outputs WHERE output_hash = 'spent-output'");
-      expect(result[0].values[0][0]).toBe(1); // is_spent
-      expect(result[0].values[0][1]).toBe(55); // spent_block_height
+      await expect(syncManager.sync({ stopOnReorg: false })).rejects.toThrow('simulated crash');
+      adapter.run = run;
 
-      // Simulate revert of blocks >= 55 (like revertBlocks does)
-      await db.run(`
-        UPDATE wallet_outputs 
-        SET is_spent = 0, spent_tx_hash = NULL, spent_block_height = NULL
-        WHERE spent_block_height >= 55
-      `);
-
-      // Verify output is now unspent
-      result = await db.exec("SELECT is_spent, spent_tx_hash, spent_block_height FROM wallet_outputs WHERE output_hash = 'spent-output'");
-      expect(result[0].values[0][0]).toBe(0); // is_spent
-      expect(result[0].values[0][1]).toBeNull(); // spent_tx_hash
-      expect(result[0].values[0][2]).toBeNull(); // spent_block_height
+      expect(await walletDB.loadSyncState()).toEqual(stateBefore);
+      expect(await outputRow('orphaned-at-58')).not.toBeNull();
+      expect(await outputRow('spent-at-59')).toEqual({ isSpent: 1, spentTxHash: 'orphaned-spend', spentBlockHeight: 59 });
+      expect(await walletDB.getBlockHash(59)).toBe(hashHeader(defaultHeader(59)));
     });
   });
 

@@ -573,18 +573,20 @@ export class TransactionKeysSync {
    * @param reorgInfo - Reorganization information
    */
   private async handleReorganization(reorgInfo: ReorganizationInfo): Promise<void> {
-    // Revert blocks in database
-    const revertHeight = reorgInfo.height + reorgInfo.blocksToRevert - 1;
-    await this.revertBlocks(reorgInfo.height, revertHeight);
-
-    // Update sync state
-    await this.updateSyncState({
-      lastSyncedHeight: reorgInfo.height - 1,
-      lastSyncedHash: (await this.getStoredBlockHash(reorgInfo.height - 1)) || '',
+    const forkParent = reorgInfo.height - 1;
+    const newState: SyncState = {
+      lastSyncedHeight: forkParent,
+      lastSyncedHash: (await this.getStoredBlockHash(forkParent)) || '',
       totalTxKeysSynced: this.syncState?.totalTxKeysSynced ?? 0,
       lastSyncTime: Date.now(),
       chainTipAtLastSync: await this.syncProvider.getChainTipHeight(),
-    });
+    };
+
+    // The new state and the deletes land in one transaction, so a crash
+    // mid-revert cannot leave the state pointing past the deleted rows.
+    await this.walletDB.revertBlocksFrom(reorgInfo.height, newState);
+    this.syncState = newState;
+    await this.walletDB.saveDatabase();
   }
 
   /**
@@ -775,20 +777,6 @@ export class TransactionKeysSync {
       }
     } catch {
       // Input processing is best-effort
-    }
-  }
-
-  /**
-   * Revert blocks from database
-   * @param startHeight - Start height to revert from
-   * @param endHeight - End height to revert to
-   */
-  private async revertBlocks(startHeight: number, endHeight: number): Promise<void> {
-    for (let height = startHeight; height <= endHeight; height++) {
-      await this.walletDB.deleteTxKeysByHeight(height);
-      await this.walletDB.deleteOutputsByHeight(height);
-      await this.walletDB.unspendOutputsBySpentHeight(height);
-      await this.walletDB.deleteBlockHash(height);
     }
   }
 

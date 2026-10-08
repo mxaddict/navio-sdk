@@ -3,6 +3,19 @@
 All notable changes to navio-sdk are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A reorg revert is now atomic.** Reverting orphaned blocks deleted their
+  rows height by height and only then saved the new sync state, so a crash
+  part-way could delete the stored hash of the last synced block and the reorg
+  was never detected again. The new `IWalletDB.revertBlocksFrom(height, state)`
+  saves the sync state and drops every tx-keys row, output, spend and block
+  hash at or above the fork in one transaction, on both `WalletDB` and
+  `IndexedDBWalletDB`. Mempool rows are left alone. Custom `IWalletDB`
+  implementations must add the method.
+
 ## [0.2.0] - 2026-09-21
 
 ### Added

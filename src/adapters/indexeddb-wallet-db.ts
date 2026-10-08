@@ -770,6 +770,50 @@ export class IndexedDBWalletDB implements IWalletDB {
     await idbTx(tx);
   }
 
+  async revertBlocksFrom(fromHeight: number, state: SyncState): Promise<void> {
+    // Height 0 marks mempool rows; a revert must never reach them.
+    if (!Number.isInteger(fromHeight) || fromHeight < 1) {
+      throw new Error(`Invalid revert height: ${fromHeight}`);
+    }
+    const db = this.ensureOpen();
+    const tx = db.transaction(['syncState', 'txKeys', 'walletOutputs', 'blockHashes'], 'readwrite');
+    const done = idbTx(tx);
+    const range = IDBKeyRange.lowerBound(fromHeight);
+
+    tx.objectStore('syncState').put({ id: 0, ...state });
+
+    const deleteInRange = (store: IDBObjectStore, source: IDBObjectStore | IDBIndex): void => {
+      const req = source.openKeyCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          store.delete(cursor.primaryKey);
+          cursor.continue();
+        }
+      };
+    };
+    const txKeys = tx.objectStore('txKeys');
+    const outputs = tx.objectStore('walletOutputs');
+    const blockHashes = tx.objectStore('blockHashes');
+    deleteInRange(txKeys, txKeys.index('blockHeight'));
+    deleteInRange(outputs, outputs.index('blockHeight'));
+    deleteInRange(blockHashes, blockHashes);
+
+    const unspendReq = outputs.index('spentBlockHeight').openCursor(range);
+    unspendReq.onsuccess = () => {
+      const cursor = unspendReq.result;
+      if (!cursor) return;
+      // Skip outputs the delete above is removing: updating one after its
+      // delete has been queued would write it back.
+      if (cursor.value.blockHeight < fromHeight) {
+        cursor.update({ ...cursor.value, isSpent: 0, spentTxHash: null, spentBlockHeight: null });
+      }
+      cursor.continue();
+    };
+
+    await done;
+  }
+
   async saveCreatedCollection(record: CreatedCollectionRecord): Promise<void> {
     await this.put('createdCollections', { ...record });
   }
