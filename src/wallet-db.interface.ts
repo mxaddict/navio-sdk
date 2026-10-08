@@ -217,6 +217,22 @@ export interface IWalletDB {
   markOutputSpent(outputHash: string, spentTxHash: string, spentBlockHeight: number): Promise<void>;
   deleteOutputsByHeight(height: number): Promise<void>;
   unspendOutputsBySpentHeight(height: number): Promise<void>;
+  /**
+   * Roll the wallet back to just below `fromHeight` after a chain
+   * reorganization, in one atomic write: save `state` (which must describe
+   * the block at `fromHeight - 1`), then drop every tx-keys row, wallet output
+   * and block hash at or above `fromHeight`, and mark outputs spent at or
+   * above it unspent again.
+   *
+   * Saving the state in the same transaction as the deletes is what makes it
+   * crash-safe: either both land or neither does, so an interrupted revert
+   * can never leave a sync state pointing at a block whose rows are gone.
+   * Mempool rows (block height 0, spent height 0) are never touched.
+   *
+   * @param fromHeight - First height to revert; must be at least 1
+   * @param state - Sync state to persist alongside the revert
+   */
+  revertBlocksFrom(fromHeight: number, state: SyncState): Promise<void>;
 
   // -- pending/mempool balance ------------------------------------------
   getPendingSpentAmount(tokenId?: string | null): Promise<bigint>;

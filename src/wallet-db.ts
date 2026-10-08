@@ -1400,6 +1400,31 @@ export class WalletDB {
     );
   }
 
+  async revertBlocksFrom(fromHeight: number, state: SyncState): Promise<void> {
+    if (!this.adapter) throw new Error('Database not open');
+    // Height 0 marks mempool rows; a revert must never reach them.
+    if (!Number.isInteger(fromHeight) || fromHeight < 1) {
+      throw new Error(`Invalid revert height: ${fromHeight}`);
+    }
+
+    await this.adapter.run('BEGIN TRANSACTION');
+    try {
+      await this.saveSyncState(state);
+      await this.adapter.run('DELETE FROM tx_keys WHERE block_height >= ?', [fromHeight]);
+      await this.adapter.run('DELETE FROM wallet_outputs WHERE block_height >= ?', [fromHeight]);
+      await this.adapter.run(
+        `UPDATE wallet_outputs SET is_spent = 0, spent_tx_hash = NULL, spent_block_height = NULL
+         WHERE spent_block_height >= ?`,
+        [fromHeight]
+      );
+      await this.adapter.run('DELETE FROM block_hashes WHERE height >= ?', [fromHeight]);
+      await this.adapter.run('COMMIT');
+    } catch (error) {
+      await this.adapter.run('ROLLBACK');
+      throw error;
+    }
+  }
+
   async getPendingSpentAmount(tokenId: string | null = null): Promise<bigint> {
     if (!this.adapter) throw new Error('Database not open');
 

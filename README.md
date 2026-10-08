@@ -48,7 +48,9 @@ await client.initialize();
 // Sync transaction keys
 await client.sync({
   onProgress: (height, tip, blocks, txKeys, isReorg) => {
-    console.log(`Syncing: ${height}/${tip} (${blocks} blocks, ${txKeys} TX keys${isReorg ? ' [REORG]' : ''})`);
+    console.log(
+      `Syncing: ${height}/${tip} (${blocks} blocks, ${txKeys} TX keys${isReorg ? ' [REORG]' : ''})`
+    );
   },
 });
 
@@ -76,7 +78,7 @@ await client.disconnect();
 ```typescript
 interface NavioClientConfig {
   // Required
-  walletDbPath: string;              // Path to wallet database file
+  walletDbPath: string; // Path to wallet database file
 
   // Database adapter (auto-detected if not specified)
   databaseAdapter?: 'indexeddb' | 'browser' | 'better-sqlite3';
@@ -86,23 +88,23 @@ interface NavioClientConfig {
 
   // Electrum backend options
   electrum?: {
-    host?: string;                   // Server host (default: 'localhost')
-    port?: number;                   // Server port (default: 50001)
-    ssl?: boolean;                   // Use SSL/TLS (default: false)
-    timeout?: number;                // Request timeout ms (default: 30000)
-    p2pmsgTimeout?: number;          // Timeout for RFQ/quote/order broadcasts (daemon grinds PoW; default: 180000)
-    clientName?: string;             // Client name (default: 'navio-sdk')
-    clientVersion?: string;          // Protocol version (default: '1.4')
+    host?: string; // Server host (default: 'localhost')
+    port?: number; // Server port (default: 50001)
+    ssl?: boolean; // Use SSL/TLS (default: false)
+    timeout?: number; // Request timeout ms (default: 30000)
+    p2pmsgTimeout?: number; // Timeout for RFQ/quote/order broadcasts (daemon grinds PoW; default: 180000)
+    clientName?: string; // Client name (default: 'navio-sdk')
+    clientVersion?: string; // Protocol version (default: '1.4')
   };
 
   // P2P backend options
   p2p?: {
-    host: string;                    // Node host
-    port?: number;                   // Node P2P port (default by network: mainnet 48470, testnet 33670, regtest 18444)
+    host: string; // Node host
+    port?: number; // Node P2P port (default by network: mainnet 48470, testnet 33670, regtest 18444)
     network?: 'mainnet' | 'testnet' | 'regtest'; // Defaults to the client's `network`
-    timeout?: number;                // Request timeout ms (default: 30000)
-    debug?: boolean;                 // Enable debug logging
-    maxBlocksPerRequest?: number;    // Blocks per scan batch (default: 16)
+    timeout?: number; // Request timeout ms (default: 30000)
+    debug?: boolean; // Enable debug logging
+    maxBlocksPerRequest?: number; // Blocks per scan batch (default: 16)
     maxConcurrentBlockRequests?: number; // Parallel block downloads (default: 8)
   };
 
@@ -111,11 +113,11 @@ interface NavioClientConfig {
 
   // Wallet options
   createWalletIfNotExists?: boolean; // Create wallet if missing (default: false)
-  restoreFromSeed?: string;          // Restore from seed (hex string)
-  restoreFromMnemonic?: string;      // Restore from BIP39 mnemonic (12-24 words)
-  restoreFromAuditKey?: string;      // Restore watch-only wallet from audit key (160 hex chars)
-  restoreFromHeight?: number;        // Block height when wallet was created (for restore)
-  creationHeight?: number;           // Creation height for new wallets (default: chainTip - 100)
+  restoreFromSeed?: string; // Restore from seed (hex string)
+  restoreFromMnemonic?: string; // Restore from BIP39 mnemonic (12-24 words)
+  restoreFromAuditKey?: string; // Restore watch-only wallet from audit key (160 hex chars)
+  restoreFromHeight?: number; // Block height when wallet was created (for restore)
+  creationHeight?: number; // Creation height for new wallets (default: chainTip - 100)
 
   // Output blinding keys
   deterministicBlindingKeys?: boolean; // Derive recoverable blinding keys from the seed (default: true)
@@ -139,6 +141,7 @@ const client = new NavioClient(config: NavioClientConfig);
 ##### `initialize(): Promise<void>`
 
 Initializes the client:
+
 - Loads or creates wallet from database
 - Connects to backend (Electrum/P2P)
 - Initializes sync manager
@@ -152,8 +155,8 @@ Synchronizes transaction keys from the blockchain.
 
 ```typescript
 interface SyncOptions {
-  startHeight?: number;              // Start height (default: last synced + 1)
-  endHeight?: number;                // End height (default: chain tip)
+  startHeight?: number; // Start height (default: last synced + 1)
+  endHeight?: number; // End height (default: chain tip)
   onProgress?: (
     currentHeight: number,
     chainTip: number,
@@ -161,19 +164,30 @@ interface SyncOptions {
     txKeysProcessed: number,
     isReorg: boolean
   ) => void;
-  stopOnReorg?: boolean;             // Stop on reorg (default: true)
-  verifyHashes?: boolean;            // Verify block hashes (default: true)
-  saveInterval?: number;             // Save every N blocks (default: 100)
-  keepTxKeys?: boolean;              // Keep TX keys in DB (default: false)
-  blockHashRetention?: number;       // Keep last N hashes (default: 10000)
+  stopOnReorg?: boolean; // Throw ReorgError instead of recovering (default: false)
+  verifyHashes?: boolean; // Verify block hashes (default: true)
+  saveInterval?: number; // Save every N blocks (default: 100)
+  keepTxKeys?: boolean; // Keep TX keys in DB (default: false)
+  blockHashRetention?: number; // Keep last N hashes (default: 10000)
 }
 ```
 
 Returns: Number of transaction keys synced
 
+On a chain reorganization, `sync()` reverts the orphaned blocks (their
+outputs, spends and block hashes) and re-syncs from the fork point, calling
+`onProgress` once with `isReorg = true`. With `stopOnReorg: true` it instead
+throws a `ReorgError` whose `info` gives the fork height and hashes, and
+reverts nothing. The fork search goes back at most `MAX_REORG_DEPTH` blocks
+(and never past `blockHashRetention`); a deeper reorg, or one that reaches a
+height whose hash is no longer stored, throws `DeepReorgError` in either mode:
+call `resetSyncState()` on the sync manager (`client.getSyncManager()`) and
+sync again.
+
 ##### `isSyncNeeded(): Promise<boolean>`
 
-Checks if synchronization is needed.
+Checks if synchronization is needed: the chain tip is past the last synced
+block, or the block at the tip height has been replaced by a reorg.
 
 ##### `getLastSyncedHeight(): number`
 
@@ -185,11 +199,11 @@ Returns current sync state with statistics.
 
 ```typescript
 interface SyncState {
-  lastSyncedHeight: number;    // Last synced block height
-  lastSyncedHash: string;      // Last synced block hash
-  totalTxKeysSynced: number;   // Total transaction keys synced
-  lastSyncTime: number;        // Last sync timestamp (ms)
-  chainTipAtLastSync: number;  // Chain tip at last sync
+  lastSyncedHeight: number; // Last synced block height
+  lastSyncedHash: string; // Last synced block hash
+  totalTxKeysSynced: number; // Total transaction keys synced
+  lastSyncTime: number; // Last sync timestamp (ms)
+  chainTipAtLastSync: number; // Chain tip at last sync
 }
 ```
 
@@ -202,7 +216,7 @@ and automatically sync. Callbacks are invoked for new blocks, transactions, and 
 
 ```typescript
 interface BackgroundSyncOptions extends SyncOptions {
-  pollInterval?: number;           // Polling interval in ms (default: 10000)
+  pollInterval?: number; // Polling interval in ms (default: 10000)
   onNewBlock?: (height: number, hash: string) => void;
   onNewTransaction?: (txHash: string, outputHash: string, amount: bigint) => void;
   onBalanceChange?: (newBalance: bigint, oldBalance: bigint) => void;
@@ -253,9 +267,9 @@ interface WalletOutput {
   blockHeight: number;
   amount: bigint;
   memo: string | null;
-  tokenId: string | null;           // 64-hex token hash for fungible tokens, 80-hex token ID for NFTs, or null for NAV
-  blindingKey: string;              // blsctData.blindingKey: k * sk_destination (recipient-bound)
-  ephemeralKey: string | null;      // blsctData.ephemeralKey: k * G — what signOutput's signatures verify against
+  tokenId: string | null; // 64-hex token hash for fungible tokens, 80-hex token ID for NFTs, or null for NAV
+  blindingKey: string; // blsctData.blindingKey: k * sk_destination (recipient-bound)
+  ephemeralKey: string | null; // blsctData.ephemeralKey: k * G — what signOutput's signatures verify against
   spendingKey: string;
   isSpent: boolean;
   spentTxHash: string | null;
@@ -336,19 +350,19 @@ Build and broadcast a confidential transaction. Selects UTXOs, constructs a BLSC
 
 ```typescript
 interface SendTransactionOptions {
-  address: string;                   // Destination address (bech32m encoded)
-  amount: bigint;                    // Amount to send in satoshis
-  memo?: string;                     // Optional memo
-  subtractFeeFromAmount?: boolean;   // Subtract fee from amount (default: false)
-  tokenId?: string | null;           // Token ID (null for NAV)
+  address: string; // Destination address (bech32m encoded)
+  amount: bigint; // Amount to send in satoshis
+  memo?: string; // Optional memo
+  subtractFeeFromAmount?: boolean; // Subtract fee from amount (default: false)
+  tokenId?: string | null; // Token ID (null for NAV)
 }
 
 interface SendTransactionResult {
-  txId: string;                      // Transaction ID (hex)
-  rawTx: string;                     // Serialized transaction (hex)
-  fee: bigint;                       // Fee paid in satoshis
-  inputCount: number;                // Inputs used
-  outputCount: number;               // Outputs created (including change)
+  txId: string; // Transaction ID (hex)
+  rawTx: string; // Serialized transaction (hex)
+  fee: bigint; // Fee paid in satoshis
+  inputCount: number; // Inputs used
+  outputCount: number; // Outputs created (including change)
 }
 ```
 
@@ -368,15 +382,15 @@ Build and broadcast a single confidential NAV transaction with multiple destinat
 
 ```typescript
 interface SendRecipient {
-  address: string;                   // Destination address (bech32m encoded)
-  amount: bigint;                    // Amount in satoshis (must be > 0)
-  memo?: string;                     // Optional memo for this output
-  subtractFeeFromAmount?: boolean;   // If true, this recipient pays a share of the fee
+  address: string; // Destination address (bech32m encoded)
+  amount: bigint; // Amount in satoshis (must be > 0)
+  memo?: string; // Optional memo for this output
+  subtractFeeFromAmount?: boolean; // If true, this recipient pays a share of the fee
 }
 
 interface SendToManyOptions {
-  recipients: SendRecipient[];       // One or more recipients (must be non-empty)
-  selectedUtxos?: string[];          // Optional manual UTXO selection (NAV outputHashes)
+  recipients: SendRecipient[]; // One or more recipients (must be non-empty)
+  selectedUtxos?: string[]; // Optional manual UTXO selection (NAV outputHashes)
 }
 ```
 
@@ -386,8 +400,8 @@ When `subtractFeeFromAmount` is set on more than one recipient, the fee is split
 const result = await client.sendToMany({
   recipients: [
     { address: 'tnav1...', amount: 100_000_000n, memo: 'invoice 1' },
-    { address: 'tnav1...', amount:  50_000_000n },
-    { address: 'tnav1...', amount:  25_000_000n, subtractFeeFromAmount: true },
+    { address: 'tnav1...', amount: 50_000_000n },
+    { address: 'tnav1...', amount: 25_000_000n, subtractFeeFromAmount: true },
   ],
 });
 
@@ -404,10 +418,7 @@ Broadcast a pre-built raw transaction hex via the connected backend. Returns the
 Aggregate one or more signed transaction hex strings into a single signed transaction using `navio-blsct`'s `CTx.aggregateTransactions()` helper. This does not broadcast automatically.
 
 ```typescript
-const aggregated = client.aggregateTransactions([
-  signedTxHexA,
-  signedTxHexB,
-]);
+const aggregated = client.aggregateTransactions([signedTxHexA, signedTxHexB]);
 
 console.log(aggregated.txId);
 await client.broadcastRawTransaction(aggregated.rawTx);
@@ -416,6 +427,7 @@ await client.broadcastRawTransaction(aggregated.rawTx);
 ##### `sendToken(options: SendTokenOptions): Promise<SendTransactionResult>`
 
 Send a fungible token. `tokenId` accepts either:
+
 - a 64-hex navio-core/RPC collection token hash, or
 - an 80-hex token ID in the same byte order (`token hash || subid`), which is normalized to the 64-hex token hash for fungible sends.
 
@@ -586,17 +598,19 @@ canonical anchor first and then falls back to every input, each against the
 first 16 ordinals, verifying every candidate against the chain.
 
 ```typescript
-const { blindingKey, publicKey, source, counter } =
-  await client.recoverBlindingKey({ txid, vout: 0 });
+const { blindingKey, publicKey, source, counter } = await client.recoverBlindingKey({
+  txid,
+  vout: 0,
+});
 ```
 
-| Field | Meaning |
-|-------|---------|
-| `blindingKey` | The **private** scalar, 64 hex chars. Treat as a secret. |
-| `publicKey` | `k * G`, 96 hex chars — the output's `blsctData.ephemeralKey`. |
-| `source` | `'stored'` (from this wallet's database) or `'derived'` (from the seed). |
-| `counter` | The sender-assigned counter that matched, when derived. |
-| `anchorOutid` | The input outid the derivation was anchored on, when derived. |
+| Field         | Meaning                                                                  |
+| ------------- | ------------------------------------------------------------------------ |
+| `blindingKey` | The **private** scalar, 64 hex chars. Treat as a secret.                 |
+| `publicKey`   | `k * G`, 96 hex chars — the output's `blsctData.ephemeralKey`.           |
+| `source`      | `'stored'` (from this wallet's database) or `'derived'` (from the seed). |
+| `counter`     | The sender-assigned counter that matched, when derived.                  |
+| `anchorOutid` | The input outid the derivation was anchored on, when derived.            |
 
 Throws when the wallet is locked, when the transaction cannot be fetched, or
 when the output was not created by this wallet.
@@ -611,7 +625,9 @@ what the BLS scheme does — so the signature verifies under
 
 ```typescript
 const { signature, blindingKey } = await client.signOutput({
-  txid, vout: 0, message: `navio-hl-refund/v1|${txid}|0|wrong address`,
+  txid,
+  vout: 0,
+  message: `navio-hl-refund/v1|${txid}|0|wrong address`,
 });
 ```
 
@@ -699,7 +715,7 @@ console.log('Audit key:', auditKeyHex);
 
 // Static conversion methods
 const scalar = KeyManager.mnemonicToScalar(mnemonic); // Convert to Scalar
-const recovered = KeyManager.seedToMnemonic(scalar);  // Convert back to mnemonic
+const recovered = KeyManager.seedToMnemonic(scalar); // Convert back to mnemonic
 ```
 
 #### Sub-addresses
@@ -720,7 +736,7 @@ console.log('Address:', mainnetAddress); // nav1...
 const { subAddress, id } = keyManager.generateNewSubAddress(0); // account 0
 
 // Create sub-address pool
-keyManager.newSubAddressPool(0);  // Main account
+keyManager.newSubAddressPool(0); // Main account
 keyManager.newSubAddressPool(-1); // Change
 keyManager.newSubAddressPool(-2); // Staking
 ```
@@ -853,11 +869,11 @@ const db = await WalletDB.loadFromBytes(rawData);
 
 The SDK provides efficient, cross-platform SQLite database storage with automatic adapter selection based on the runtime environment:
 
-| Platform | Adapter | Storage | Performance |
-|----------|---------|---------|-------------|
-| Browser | sql.js + IndexedDB | IndexedDB | Good |
-| Node.js | better-sqlite3 | File system | Excellent |
-| Testing | In-memory | Memory | Fast |
+| Platform | Adapter            | Storage     | Performance |
+| -------- | ------------------ | ----------- | ----------- |
+| Browser  | sql.js + IndexedDB | IndexedDB   | Good        |
+| Node.js  | better-sqlite3     | File system | Excellent   |
+| Testing  | In-memory          | Memory      | Fast        |
 
 The browser adapter uses `sql.js` (SQLite compiled to WebAssembly) with IndexedDB for persistence. Changes are automatically saved to IndexedDB with debouncing for optimal performance.
 
@@ -866,7 +882,7 @@ import { NavioClient, WalletDB, createDatabaseAdapter } from 'navio-sdk';
 
 // Auto-detect best adapter for environment
 const client = new NavioClient({
-  walletDbPath: 'wallet.db',  // Adapter auto-selected based on environment
+  walletDbPath: 'wallet.db', // Adapter auto-selected based on environment
   // ... other config
 });
 
@@ -943,11 +959,11 @@ Abstract interface for sync backends. Allows switching between Electrum and P2P.
 ```typescript
 interface SyncProvider {
   type: 'electrum' | 'p2p' | 'custom';
-  
+
   connect(): Promise<void>;
   disconnect(): void;
   isConnected(): boolean;
-  
+
   getChainTipHeight(): Promise<number>;
   getChainTip(): Promise<{ height: number; hash: string }>;
   getBlockHeader(height: number): Promise<string>;
@@ -1086,7 +1102,8 @@ await client.sync({
 const client = new NavioClient({
   walletDbPath: './restored-wallet.db',
   electrum: { host: 'localhost', port: 50005 },
-  restoreFromMnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art',
+  restoreFromMnemonic:
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art',
   restoreFromHeight: 50000, // Block height when wallet was created
   network: 'testnet',
 });
@@ -1127,7 +1144,7 @@ const client = new NavioClient({
   backend: 'p2p',
   network: 'testnet',
   p2p: {
-    host: 'localhost',   // port defaults to 33670 on testnet
+    host: 'localhost', // port defaults to 33670 on testnet
     debug: false,
   },
   createWalletIfNotExists: true,
@@ -1158,10 +1175,10 @@ await client.sync({
     const progress = ((currentHeight / chainTip) * 100).toFixed(1);
     const elapsed = (Date.now() - startTime) / 1000;
     const rate = blocksProcessed / elapsed;
-    
+
     console.log(
       `Progress: ${progress}% | ${blocksProcessed} blocks | ` +
-      `${txKeysProcessed} TX keys | ${rate.toFixed(1)} blocks/s`
+        `${txKeysProcessed} TX keys | ${rate.toFixed(1)} blocks/s`
     );
   },
   saveInterval: 100, // Save every 100 blocks
@@ -1186,18 +1203,18 @@ await client.initialize();
 // Start background sync - polls every 10 seconds
 await client.startBackgroundSync({
   pollInterval: 10000,
-  
+
   onNewBlock: (height, hash) => {
     console.log(`New block ${height}: ${hash.substring(0, 16)}...`);
   },
-  
+
   onBalanceChange: (newBalance, oldBalance) => {
     const diff = Number(newBalance - oldBalance) / 1e8;
     console.log(`Balance changed: ${diff > 0 ? '+' : ''}${diff.toFixed(8)} NAV`);
     console.log(`New balance: ${Number(newBalance) / 1e8} NAV`);
   },
-  
-  onError: (error) => {
+
+  onError: error => {
     console.error('Sync error:', error.message);
   },
 });
@@ -1248,8 +1265,8 @@ const result2 = await client.sendTransaction({
 const result3 = await client.sendToMany({
   recipients: [
     { address: 'tnav1...', amount: 100_000_000n, memo: 'rent' },
-    { address: 'tnav1...', amount:  50_000_000n },
-    { address: 'tnav1...', amount:  25_000_000n, subtractFeeFromAmount: true },
+    { address: 'tnav1...', amount: 50_000_000n },
+    { address: 'tnav1...', amount: 25_000_000n, subtractFeeFromAmount: true },
   ],
 });
 
@@ -1296,6 +1313,7 @@ Three things worth knowing:
   const output = (await client.getAllOutputs()).find(o => o.outputHash === hash)!;
   Signature.deserialize(signature).verify(PublicKey.deserialize(output.ephemeralKey!), message);
   ```
+
 - A signature proves the signer **created** the output, not that they still own
   the funds. For a refund that is the right property: the person who paid is
   the person entitled to the reversal.
@@ -1335,22 +1353,22 @@ const result = await client.acceptQuote({
   quoteId: quotes[0].quoteId,
   buyTokenId: tokenId,
   sellTokenId: null,
-  maxPay: 60n,    // reject if charged more
-  minRecv: 500n,  // reject if delivered less
+  maxPay: 60n, // reject if charged more
+  minRecv: 500n, // reject if delivered less
 });
 console.log('Swap tx:', result.txId);
 
 // ---- Maker: advertise liquidity and answer matching requests ----
 await client.setSwapIntent({
-  tokenInId: tokenId,  // we deliver this
-  tokenOutId: null,    // we want NAV
+  tokenInId: tokenId, // we deliver this
+  tokenOutId: null, // we want NAV
   minSize: 1n,
   maxSize: 10_000n,
   priceMin: 10_000_000n, // 0.1 NAV per unit (scaled 1e8)
   expiry: Math.floor(Date.now() / 1000) + 3600,
 });
 
-await client.subscribePendingQuoteRequests(async (pending) => {
+await client.subscribePendingQuoteRequests(async pending => {
   for (const request of pending) {
     await client.replyQuote({ request }); // builds + signs the maker half
   }
@@ -1370,7 +1388,7 @@ await client.broadcastOrder({
 // offered again by the next broadcastOrder (the network's order cache
 // rejects a second order spending an input of a stored order). A timed-out
 // broadcast keeps the reservation — the daemon may still have published it.
-const orders = await client.listStandingOrders();   // live + unconfirmed, pruned on expiry / spent inputs
+const orders = await client.listStandingOrders(); // live + unconfirmed, pruned on expiry / spent inputs
 await client.forgetStandingOrder(orders[0].localId); // release the coins locally (network keeps the order until expiry)
 
 Maker halves spend wallet coins that are **not locked** while a quote or
@@ -1460,10 +1478,7 @@ const fs = require('fs');
 const encryptedData = fs.readFileSync('wallet-backup.enc');
 
 // Decrypt and load
-const walletDb = await WalletDB.loadEncrypted(
-  new Uint8Array(encryptedData),
-  'backup-password'
-);
+const walletDb = await WalletDB.loadEncrypted(new Uint8Array(encryptedData), 'backup-password');
 
 // Load the wallet
 const keyManager = await walletDb.loadWallet();
@@ -1476,24 +1491,24 @@ console.log('Wallet restored');
 
 The wallet database includes the following tables:
 
-| Table | Description |
-|-------|-------------|
-| `keys` | Key pairs for transactions |
-| `out_keys` | Output-specific keys |
-| `crypted_keys` | Encrypted key pairs (when password set) |
-| `crypted_out_keys` | Encrypted output keys (when password set) |
-| `view_key` | View key for output detection |
-| `spend_key` | Spending public key |
-| `hd_chain` | HD chain information |
-| `master_seed` | Mnemonic phrase for wallet recovery |
-| `sub_addresses` | Sub-address mappings |
-| `wallet_outputs` | Wallet UTXOs with amounts |
+| Table                  | Description                                             |
+| ---------------------- | ------------------------------------------------------- |
+| `keys`                 | Key pairs for transactions                              |
+| `out_keys`             | Output-specific keys                                    |
+| `crypted_keys`         | Encrypted key pairs (when password set)                 |
+| `crypted_out_keys`     | Encrypted output keys (when password set)               |
+| `view_key`             | View key for output detection                           |
+| `spend_key`            | Spending public key                                     |
+| `hd_chain`             | HD chain information                                    |
+| `master_seed`          | Mnemonic phrase for wallet recovery                     |
+| `sub_addresses`        | Sub-address mappings                                    |
+| `wallet_outputs`       | Wallet UTXOs with amounts                               |
 | `output_blinding_keys` | Private blinding scalars of outputs this wallet created |
-| `wallet_metadata` | Wallet creation info |
-| `encryption_metadata` | Encryption parameters (salt, verification hash) |
-| `tx_keys` | Transaction keys (optional) |
-| `block_hashes` | Block hashes for reorg detection |
-| `sync_state` | Synchronization state |
+| `wallet_metadata`      | Wallet creation info                                    |
+| `encryption_metadata`  | Encryption parameters (salt, verification hash)         |
+| `tx_keys`              | Transaction keys (optional)                             |
+| `block_hashes`         | Block hashes for reorg detection                        |
+| `sync_state`           | Synchronization state                                   |
 
 ### output_blinding_keys Schema
 
@@ -1501,7 +1516,7 @@ Holds the **private** blinding scalar for each output this wallet created, as
 the fast path for `recoverBlindingKey`. Kept out of `wallet_outputs` on
 purpose: the row mappers for that table produce `WalletOutput`, which the
 public getters hand to callers, and a secret must not ride along by accident.
-(`WalletOutput.blindingKey` is the *public* point from the chain.)
+(`WalletOutput.blindingKey` is the _public_ point from the chain.)
 
 Existing databases gain this table when they are next opened; nothing is
 rewritten, and a wallet with no rows here falls back to deriving from the seed.
@@ -1542,12 +1557,12 @@ CREATE TABLE wallet_outputs (
 
 The SDK includes several optimization options:
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `keepTxKeys` | `false` | Don't store TX keys after processing (saves space) |
-| `blockHashRetention` | `10000` | Only keep last 10k block hashes (~2.4 MB savings) |
-| `saveInterval` | `100` | Save database every 100 blocks |
-| `creationHeight` | `chainTip - 100` | Skip blocks before wallet creation |
+| Option               | Default          | Description                                        |
+| -------------------- | ---------------- | -------------------------------------------------- |
+| `keepTxKeys`         | `false`          | Don't store TX keys after processing (saves space) |
+| `blockHashRetention` | `10000`          | Only keep last 10k block hashes (~2.4 MB savings)  |
+| `saveInterval`       | `100`            | Save database every 100 blocks                     |
+| `creationHeight`     | `chainTip - 100` | Skip blocks before wallet creation                 |
 
 ---
 
@@ -1645,6 +1660,7 @@ const isValid = await verifyPassword('password', salt, hash);
 ```
 
 **Security Properties:**
+
 - **Key Derivation**: Argon2id with 64MB memory, 3 iterations, 4 parallelism
 - **Encryption**: AES-256-GCM (authenticated encryption)
 - **Random IV**: 12 bytes per encryption (never reused)
@@ -1691,6 +1707,7 @@ npm run dev
 ```
 
 Features:
+
 - Create/restore HD wallet
 - Connect to Electrum server
 - Background synchronization

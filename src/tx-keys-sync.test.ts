@@ -16,55 +16,83 @@ import {
   deriveCollectionTokenPublicKeyFromMaster,
   getCTxOutBlindingKey,
 } from '@nav-io/navio-blsct';
-import { TransactionKeysSync, SyncState } from './tx-keys-sync';
+import {
+  TransactionKeysSync,
+  SyncState,
+  DeepReorgError,
+  MAX_REORG_DEPTH,
+  ReorgError,
+} from './tx-keys-sync';
 import { WalletDB } from './wallet-db';
 import { SyncProvider, ChainTip, BlockHeadersResult } from './sync-provider';
 import type { BlockTransactionKeys, TransactionKeys } from './electrum';
+import type { StoreOutputParams } from './wallet-db.interface';
+import { sha256 } from '@noble/hashes/sha256';
 
-// Mock sync provider for testing
+/** Block hash as the SDK computes it: double SHA-256 of the header, byte-reversed. */
+function hashHeader(headerHex: string): string {
+  return Buffer.from(sha256(sha256(Buffer.from(headerHex, 'hex'))))
+    .reverse()
+    .toString('hex');
+}
+
+/** The header the mock serves at a height nobody overrode (80 bytes = 160 hex chars). */
+function defaultHeader(height: number): string {
+  return height.toString(16).padStart(160, '0');
+}
+
+/** A header for `height` on a competing branch, distinct from defaultHeader(). */
+function branchHeader(height: number, branch: number = 1): string {
+  return branch.toString(16).padStart(2, '0').repeat(76) + height.toString(16).padStart(8, '0');
+}
+
+type MockSyncProvider = SyncProvider & { setChainTip(height: number): void };
+
+// Mock sync provider for testing. `blockHeaders` and `blockTxKeys` are read on
+// every call, so a test can rewrite them between syncs to simulate a reorg.
 function createMockSyncProvider(options: {
   chainTipHeight?: number;
   blockHeaders?: Map<number, string>;
-  blockHashes?: Map<number, string>;
-}): SyncProvider {
-  const chainTipHeight = options.chainTipHeight ?? 1000;
+  blockTxKeys?: Map<number, TransactionKeys[]>;
+}): MockSyncProvider {
+  let chainTipHeight = options.chainTipHeight ?? 1000;
   const blockHeaders = options.blockHeaders ?? new Map();
-  const blockHashes = options.blockHashes ?? new Map();
-
-  // Generate default headers/hashes if not provided
-  for (let i = 0; i <= chainTipHeight; i++) {
-    if (!blockHeaders.has(i)) {
-      // Generate a simple unique header (80 bytes = 160 hex chars)
-      const headerHex = i.toString(16).padStart(160, '0');
-      blockHeaders.set(i, headerHex);
-    }
-  }
+  const blockTxKeys = options.blockTxKeys ?? new Map();
+  const headerAt = (height: number): string => blockHeaders.get(height) ?? defaultHeader(height);
 
   return {
     type: 'custom' as const,
+    setChainTip: (height: number) => {
+      chainTipHeight = height;
+    },
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn(),
     isConnected: vi.fn().mockReturnValue(true),
-    getChainTipHeight: vi.fn().mockResolvedValue(chainTipHeight),
-    getChainTip: vi.fn().mockResolvedValue({ height: chainTipHeight, hash: blockHashes.get(chainTipHeight) || 'mock-hash' } as ChainTip),
-    getBlockHeader: vi.fn().mockImplementation((height: number) => {
-      return Promise.resolve(blockHeaders.get(height) || '00'.repeat(80));
-    }),
+    getChainTipHeight: vi.fn().mockImplementation(() => Promise.resolve(chainTipHeight)),
+    getChainTip: vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve({
+          height: chainTipHeight,
+          hash: hashHeader(headerAt(chainTipHeight)),
+        } as ChainTip)
+      ),
+    getBlockHeader: vi
+      .fn()
+      .mockImplementation((height: number) => Promise.resolve(headerAt(height))),
     getBlockHeaders: vi.fn().mockImplementation((startHeight: number, count: number) => {
       let hex = '';
       for (let i = 0; i < count; i++) {
-        const h = startHeight + i;
-        hex += blockHeaders.get(h) || '00'.repeat(80);
+        hex += headerAt(startHeight + i);
       }
       return Promise.resolve({ count, hex, max: 2016 } as BlockHeadersResult);
     }),
     getBlockTransactionKeysRange: vi.fn().mockImplementation((startHeight: number) => {
-      // Return empty blocks for testing
       const blocks: BlockTransactionKeys[] = [];
       for (let i = 0; i < 10 && startHeight + i <= chainTipHeight; i++) {
         blocks.push({
           height: startHeight + i,
-          txKeys: [],
+          txKeys: blockTxKeys.get(startHeight + i) ?? [],
         });
       }
       return Promise.resolve({
@@ -94,6 +122,56 @@ describe('TransactionKeysSync', () => {
   afterEach(async () => {
     await walletDB.close();
   });
+
+  function output(
+    outputHash: string,
+    blockHeight: number,
+    spent?: { txHash: string; height: number }
+  ): StoreOutputParams {
+    return {
+      outputHash,
+      txHash: `tx-${outputHash}`,
+      outputIndex: 0,
+      blockHeight,
+      outputData: '',
+      amount: 1_000_000,
+      gamma: '01',
+      memo: null,
+      tokenId: null,
+      blindingKey: '02',
+      ephemeralKey: null,
+      spendingKey: '03',
+      isSpent: spent !== undefined,
+      spentTxHash: spent?.txHash ?? null,
+      spentBlockHeight: spent?.height ?? null,
+      txType: 'received',
+      timestamp: 0,
+    };
+  }
+
+  async function outputRow(
+    outputHash: string
+  ): Promise<{
+    isSpent: number;
+    spentTxHash: string | null;
+    spentBlockHeight: number | null;
+  } | null> {
+    const stmt = await walletDB
+      .getAdapter()
+      .prepare(
+        'SELECT is_spent, spent_tx_hash, spent_block_height FROM wallet_outputs WHERE output_hash = ?'
+      );
+    stmt.bind([outputHash]);
+    const found = await stmt.step();
+    const row = await stmt.getAsObject();
+    await stmt.free();
+    if (!found) return null;
+    return {
+      isSpent: row.is_spent as number,
+      spentTxHash: row.spent_tx_hash as string | null,
+      spentBlockHeight: row.spent_block_height as number | null,
+    };
+  }
 
   describe('spent output detection', () => {
     it('should mark outputs as spent when input references wallet output', async () => {
@@ -259,120 +337,268 @@ describe('TransactionKeysSync', () => {
   });
 
   describe('reorganization detection', () => {
-    it('should detect reorganization when block hash changes', async () => {
-      // Create provider with specific block headers
+    it('throws ReorgError and reverts nothing with stopOnReorg: true', async () => {
       const blockHeaders = new Map<number, string>();
-      // Height 60 - the server will return this different header
-      blockHeaders.set(60, 'ff'.repeat(80)); // New header (simulating reorg)
-      
-      syncProvider = createMockSyncProvider({ chainTipHeight: 100, blockHeaders });
-      syncManager = new TransactionKeysSync(walletDB, syncProvider);
+      const provider = createMockSyncProvider({ chainTipHeight: 60, blockHeaders });
+      syncManager = new TransactionKeysSync(walletDB, provider);
       await syncManager.initialize();
+      await syncManager.sync({ startHeight: 0 });
+      for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
 
-      const db = walletDB.getAdapter();
+      const error = await syncManager.sync({ stopOnReorg: true }).catch(e => e);
 
-      // Store a DIFFERENT hash at height 60 than what the server will provide
-      // When extractBlockHash is called on 'ff'.repeat(80), it will produce a different hash
-      await db.run('INSERT INTO block_hashes (height, hash) VALUES (?, ?)', [60, 'original-hash-at-60-different-from-server']);
-
-      // Update sync state to indicate we synced up to height 60
-      // The sync will check reorganization at lastSyncedHeight (60)
-      await db.run(`
-        INSERT OR REPLACE INTO sync_state (id, last_synced_height, last_synced_hash, total_tx_keys_synced, last_sync_time, chain_tip_at_last_sync)
-        VALUES (0, 60, 'some-hash', 0, ?, 100)
-      `, [Date.now()]);
-
-      // Re-initialize to load the sync state we just inserted
-      await syncManager.initialize();
-
-      // Now sync with stopOnReorg = true - should throw because:
-      // 1. We have syncState with lastSyncedHeight = 60
-      // 2. We have a stored hash at height 60 
-      // 3. The server's hash at height 60 is different
-      await expect(syncManager.sync({ 
-        startHeight: 61, 
-        endHeight: 70, 
-        stopOnReorg: true,
-        verifyHashes: true,
-      })).rejects.toThrow(/reorganization/i);
+      expect(error).toBeInstanceOf(ReorgError);
+      expect(error.message).toMatch(/reorganization detected at height 58/i);
+      expect(error.info).toEqual({
+        height: 58,
+        oldHash: hashHeader(defaultHeader(58)),
+        newHash: hashHeader(branchHeader(58)),
+        blocksToRevert: 3,
+      });
+      expect(syncManager.getLastSyncedHeight()).toBe(60);
+      expect(await walletDB.getBlockHash(60)).toBe(hashHeader(defaultHeader(60)));
     });
   });
 
   describe('block reversion', () => {
-    it('should delete outputs created in reverted blocks', async () => {
-      syncProvider = createMockSyncProvider({ chainTipHeight: 100 });
-      syncManager = new TransactionKeysSync(walletDB, syncProvider);
+    /**
+     * Sync a wallet to height 60, give it outputs on both sides of a fork at
+     * 58 plus mempool rows, then replace blocks 58..60 and grow the tip to 62.
+     */
+    async function syncThenReorg(): Promise<{
+      blockHeaders: Map<number, string>;
+      provider: MockSyncProvider;
+    }> {
+      const blockHeaders = new Map<number, string>();
+      const provider = createMockSyncProvider({ chainTipHeight: 60, blockHeaders });
+      syncManager = new TransactionKeysSync(walletDB, provider);
       await syncManager.initialize();
+      await syncManager.sync({ startHeight: 0 });
+      expect(syncManager.getLastSyncedHeight()).toBe(60);
 
-      const db = walletDB.getAdapter();
-      
-      // Insert outputs at different heights
-      await db.run(`
-        INSERT INTO wallet_outputs 
-        (output_hash, tx_hash, output_index, block_height, output_data, amount, is_spent, created_at)
-        VALUES 
-        ('output-at-50', 'tx-50', 0, 50, 'data', 1000000, 0, ?),
-        ('output-at-55', 'tx-55', 0, 55, 'data', 2000000, 0, ?),
-        ('output-at-60', 'tx-60', 0, 60, 'data', 3000000, 0, ?)
-      `, [Date.now(), Date.now(), Date.now()]);
+      await walletDB.storeWalletOutput(output('kept-at-50', 50));
+      await walletDB.storeWalletOutput(output('orphaned-at-58', 58));
+      await walletDB.storeWalletOutput(
+        output('spent-at-59', 40, { txHash: 'orphaned-spend', height: 59 })
+      );
+      await walletDB.storeWalletOutput(
+        output('spent-at-57', 40, { txHash: 'kept-spend', height: 57 })
+      );
+      await walletDB.storeWalletOutput(output('mempool-output', 0));
+      await walletDB.storeWalletOutput(
+        output('spent-in-mempool', 45, { txHash: 'mempool-tx', height: 0 })
+      );
 
-      // Store sync state at height 60
-      await db.run(`
-        INSERT OR REPLACE INTO sync_state (id, last_synced_height, last_synced_hash, total_tx_keys_synced, last_sync_time, chain_tip_at_last_sync)
-        VALUES (0, 60, 'hash-60', 100, ?, 60)
-      `, [Date.now()]);
+      for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
+      provider.setChainTip(62);
+      return { blockHeaders, provider };
+    }
 
-      // Store block hashes
-      await db.run('INSERT INTO block_hashes (height, hash) VALUES (50, ?), (55, ?), (60, ?)', ['hash-50', 'hash-55', 'hash-60']);
+    it('reverts outputs and spends from orphaned blocks and keeps mempool rows', async () => {
+      await syncThenReorg();
 
-      // Verify all outputs exist
-      let result = await db.exec('SELECT COUNT(*) FROM wallet_outputs');
-      expect(result[0].values[0][0]).toBe(3);
+      await syncManager.sync();
 
-      // Simulate reorg by directly calling revertBlocks (we access it via sync with handleReorg)
-      // For this test, let's directly manipulate like revertBlocks would
-      await db.run('DELETE FROM wallet_outputs WHERE block_height >= 55');
-      await db.run('DELETE FROM block_hashes WHERE height >= 55');
-
-      // Verify outputs at height >= 55 are deleted
-      result = await db.exec('SELECT COUNT(*) FROM wallet_outputs');
-      expect(result[0].values[0][0]).toBe(1);
-
-      result = await db.exec("SELECT output_hash FROM wallet_outputs");
-      expect(result[0].values[0][0]).toBe('output-at-50');
+      expect(await outputRow('kept-at-50')).not.toBeNull();
+      expect(await outputRow('orphaned-at-58')).toBeNull();
+      expect(await outputRow('spent-at-59')).toEqual({
+        isSpent: 0,
+        spentTxHash: null,
+        spentBlockHeight: null,
+      });
+      expect(await outputRow('spent-at-57')).toEqual({
+        isSpent: 1,
+        spentTxHash: 'kept-spend',
+        spentBlockHeight: 57,
+      });
+      expect(await outputRow('mempool-output')).not.toBeNull();
+      expect(await outputRow('spent-in-mempool')).toEqual({
+        isSpent: 1,
+        spentTxHash: 'mempool-tx',
+        spentBlockHeight: 0,
+      });
+      expect(syncManager.getLastSyncedHeight()).toBe(62);
     });
 
-    it('should unspend outputs that were spent in reverted blocks', async () => {
-      syncProvider = createMockSyncProvider({ chainTipHeight: 100 });
-      syncManager = new TransactionKeysSync(walletDB, syncProvider);
+    it('leaves the wallet untouched when the revert fails part-way', async () => {
+      await syncThenReorg();
+      const stateBefore = await walletDB.loadSyncState();
+
+      // Fail the last write of the revert, after the outputs were deleted.
+      const adapter = walletDB.getAdapter();
+      const run = adapter.run.bind(adapter);
+      adapter.run = async (sql: string, params?: any[]) => {
+        if (sql.startsWith('DELETE FROM block_hashes WHERE height >=')) {
+          throw new Error('simulated crash');
+        }
+        return run(sql, params);
+      };
+
+      await expect(syncManager.sync()).rejects.toThrow('simulated crash');
+      adapter.run = run;
+
+      expect(await walletDB.loadSyncState()).toEqual(stateBefore);
+      expect(await outputRow('orphaned-at-58')).not.toBeNull();
+      expect(await outputRow('spent-at-59')).toEqual({
+        isSpent: 1,
+        spentTxHash: 'orphaned-spend',
+        spentBlockHeight: 59,
+      });
+      expect(await walletDB.getBlockHash(59)).toBe(hashHeader(defaultHeader(59)));
+    });
+  });
+
+  describe('reorganization recovery', () => {
+    /** Sync a fresh wallet from genesis to `tip` on the default chain. */
+    async function syncedWallet(tip: number, blockTxKeys = new Map<number, TransactionKeys[]>()) {
+      const blockHeaders = new Map<number, string>();
+      const provider = createMockSyncProvider({ chainTipHeight: tip, blockHeaders, blockTxKeys });
+      syncManager = new TransactionKeysSync(walletDB, provider);
       await syncManager.initialize();
+      await syncManager.sync({ startHeight: 0 });
+      expect(syncManager.getLastSyncedHeight()).toBe(tip);
+      return { provider, blockHeaders, blockTxKeys };
+    }
 
-      const db = walletDB.getAdapter();
-      
-      // Insert an output that was spent at height 55
-      await db.run(`
-        INSERT INTO wallet_outputs 
-        (output_hash, tx_hash, output_index, block_height, output_data, amount, is_spent, spent_tx_hash, spent_block_height, created_at)
-        VALUES ('spent-output', 'original-tx', 0, 40, 'data', 1000000, 1, 'spending-tx', 55, ?)
-      `, [Date.now()]);
+    function rangeFetchHeights(provider: SyncProvider): number[] {
+      return vi.mocked(provider.getBlockTransactionKeysRange).mock.calls.map(([height]) => height);
+    }
 
-      // Verify output is spent
-      let result = await db.exec("SELECT is_spent, spent_block_height FROM wallet_outputs WHERE output_hash = 'spent-output'");
-      expect(result[0].values[0][0]).toBe(1); // is_spent
-      expect(result[0].values[0][1]).toBe(55); // spent_block_height
+    it('reverts and re-scans the replacement block after a 1-block reorg', async () => {
+      const { provider, blockHeaders, blockTxKeys } = await syncedWallet(60);
+      await walletDB.storeWalletOutput(output('orphaned-at-60', 60));
+      await walletDB.storeWalletOutput(
+        output('spent-at-60', 40, { txHash: 'orphaned-spend', height: 60 })
+      );
+      await walletDB.storeWalletOutput(output('spent-by-new-60', 40));
 
-      // Simulate revert of blocks >= 55 (like revertBlocks does)
-      await db.run(`
-        UPDATE wallet_outputs 
-        SET is_spent = 0, spent_tx_hash = NULL, spent_block_height = NULL
-        WHERE spent_block_height >= 55
-      `);
+      // Block 60 is replaced by one that spends a different wallet output.
+      blockHeaders.set(60, branchHeader(60));
+      blockTxKeys.set(60, [
+        {
+          txHash: 'replacement-spend',
+          keys: { inputs: [{ outputHash: 'spent-by-new-60' }], outputs: [] },
+        },
+      ]);
+      provider.setChainTip(61);
+      vi.mocked(provider.getBlockTransactionKeysRange).mockClear();
+      const onProgress = vi.fn();
 
-      // Verify output is now unspent
-      result = await db.exec("SELECT is_spent, spent_tx_hash, spent_block_height FROM wallet_outputs WHERE output_hash = 'spent-output'");
-      expect(result[0].values[0][0]).toBe(0); // is_spent
-      expect(result[0].values[0][1]).toBeNull(); // spent_tx_hash
-      expect(result[0].values[0][2]).toBeNull(); // spent_block_height
+      await syncManager.sync({ onProgress });
+
+      expect(await outputRow('orphaned-at-60')).toBeNull();
+      expect(await outputRow('spent-at-60')).toEqual({
+        isSpent: 0,
+        spentTxHash: null,
+        spentBlockHeight: null,
+      });
+      // Only a re-scan of height 60 can have recorded this spend.
+      expect(rangeFetchHeights(provider)[0]).toBe(60);
+      expect(await outputRow('spent-by-new-60')).toEqual({
+        isSpent: 1,
+        spentTxHash: 'replacement-spend',
+        spentBlockHeight: 60,
+      });
+      expect(await walletDB.getBlockHash(60)).toBe(hashHeader(branchHeader(60)));
+      expect(syncManager.getLastSyncedHeight()).toBe(61);
+      expect(syncManager.getSyncState()!.lastSyncedHash).toBe(hashHeader(defaultHeader(61)));
+      expect(onProgress).toHaveBeenCalledWith(59, 61, 0, 0, true);
+    });
+
+    it('detects a reorg that replaces the tip block at the same height', async () => {
+      const { provider, blockHeaders } = await syncedWallet(60);
+      expect(await syncManager.isSyncNeeded()).toBe(false);
+
+      blockHeaders.set(60, branchHeader(60));
+      expect(await syncManager.isSyncNeeded()).toBe(true);
+      vi.mocked(provider.getBlockTransactionKeysRange).mockClear();
+
+      await syncManager.sync();
+
+      expect(rangeFetchHeights(provider)).toEqual([60]);
+      expect(await walletDB.getBlockHash(60)).toBe(hashHeader(branchHeader(60)));
+      expect(syncManager.getSyncState()!.lastSyncedHash).toBe(hashHeader(branchHeader(60)));
+      expect(await syncManager.isSyncNeeded()).toBe(false);
+    });
+
+    it('re-scans from the fork even when an explicit startHeight is past it', async () => {
+      const { provider, blockHeaders } = await syncedWallet(60);
+      blockHeaders.set(60, branchHeader(60));
+      provider.setChainTip(62);
+      vi.mocked(provider.getBlockTransactionKeysRange).mockClear();
+
+      await syncManager.sync({ startHeight: 61 });
+
+      expect(rangeFetchHeights(provider)[0]).toBe(60);
+      expect(await walletDB.getBlockHash(60)).toBe(hashHeader(branchHeader(60)));
+    });
+
+    it('finds the fork point of a 3-block reorg', async () => {
+      const { provider, blockHeaders } = await syncedWallet(60);
+      for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
+      vi.mocked(provider.getBlockTransactionKeysRange).mockClear();
+      const onProgress = vi.fn();
+
+      await syncManager.sync({ onProgress });
+
+      expect(onProgress).toHaveBeenCalledWith(57, 60, 0, 0, true);
+      expect(rangeFetchHeights(provider)[0]).toBe(58);
+      expect(await walletDB.getBlockHash(57)).toBe(hashHeader(defaultHeader(57)));
+      for (let h = 58; h <= 60; h++) {
+        expect(await walletDB.getBlockHash(h)).toBe(hashHeader(branchHeader(h)));
+      }
+    });
+
+    it('gives up with DeepReorgError past MAX_REORG_DEPTH instead of walking to genesis', async () => {
+      const tip = MAX_REORG_DEPTH + 50;
+      const { provider, blockHeaders } = await syncedWallet(tip);
+      for (let h = 0; h <= tip; h++) blockHeaders.set(h, branchHeader(h));
+      vi.mocked(provider.getBlockHeader).mockClear();
+      vi.mocked(provider.getBlockHeaders).mockClear();
+
+      const error = await syncManager.sync().catch(e => e);
+
+      expect(error).toBeInstanceOf(DeepReorgError);
+      expect(error).toMatchObject({
+        reason: 'too-deep',
+        lastSyncedHeight: tip,
+        searchedDownTo: tip - MAX_REORG_DEPTH,
+      });
+      expect(provider.getBlockHeader).toHaveBeenCalledTimes(1);
+      expect(provider.getBlockHeaders).toHaveBeenCalledTimes(1);
+      expect(syncManager.getLastSyncedHeight()).toBe(tip);
+      expect(await walletDB.getBlockHash(tip)).toBe(hashHeader(defaultHeader(tip)));
+    });
+
+    it('gives up with DeepReorgError when the fork is below the stored hashes', async () => {
+      const { provider, blockHeaders } = await syncedWallet(60);
+      await walletDB.deleteBlockHash(57); // as blockHashRetention pruning would
+      for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
+      vi.mocked(provider.getBlockHeader).mockClear();
+      vi.mocked(provider.getBlockHeaders).mockClear();
+
+      const error = await syncManager.sync().catch(e => e);
+
+      expect(error).toBeInstanceOf(DeepReorgError);
+      expect(error).toMatchObject({
+        reason: 'missing-history',
+        lastSyncedHeight: 60,
+        searchedDownTo: 57,
+      });
+      expect(provider.getBlockHeader).toHaveBeenCalledTimes(1);
+      expect(provider.getBlockHeaders).toHaveBeenCalledTimes(1);
+      expect(syncManager.getLastSyncedHeight()).toBe(60);
+    });
+
+    it('does not revert when the server is merely behind the wallet', async () => {
+      const { provider } = await syncedWallet(60);
+      provider.setChainTip(58);
+
+      await syncManager.sync();
+
+      expect(syncManager.getLastSyncedHeight()).toBe(60);
+      expect(await walletDB.getBlockHash(60)).toBe(hashHeader(defaultHeader(60)));
+      expect(await syncManager.isSyncNeeded()).toBe(false);
     });
   });
 
