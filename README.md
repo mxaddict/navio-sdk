@@ -164,7 +164,7 @@ interface SyncOptions {
     txKeysProcessed: number,
     isReorg: boolean
   ) => void;
-  stopOnReorg?: boolean; // Stop on reorg (default: true)
+  stopOnReorg?: boolean; // Throw ReorgError instead of recovering (default: false)
   verifyHashes?: boolean; // Verify block hashes (default: true)
   saveInterval?: number; // Save every N blocks (default: 100)
   keepTxKeys?: boolean; // Keep TX keys in DB (default: false)
@@ -174,9 +174,20 @@ interface SyncOptions {
 
 Returns: Number of transaction keys synced
 
+On a chain reorganization, `sync()` reverts the orphaned blocks (their
+outputs, spends and block hashes) and re-syncs from the fork point, calling
+`onProgress` once with `isReorg = true`. With `stopOnReorg: true` it instead
+throws a `ReorgError` whose `info` gives the fork height and hashes, and
+reverts nothing. The fork search goes back at most `MAX_REORG_DEPTH` blocks
+(and never past `blockHashRetention`); a deeper reorg, or one that reaches a
+height whose hash is no longer stored, throws `DeepReorgError` in either mode:
+call `resetSyncState()` on the sync manager (`client.getSyncManager()`) and
+sync again.
+
 ##### `isSyncNeeded(): Promise<boolean>`
 
-Checks if synchronization is needed.
+Checks if synchronization is needed: the chain tip is past the last synced
+block, or the block at the tip height has been replaced by a reorg.
 
 ##### `getLastSyncedHeight(): number`
 

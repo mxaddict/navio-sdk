@@ -75,7 +75,11 @@ export interface SyncOptions {
   endHeight?: number;
   /** Progress callback */
   onProgress?: SyncProgressCallback;
-  /** Stop on reorganization (default: true) */
+  /**
+   * Throw a {@link ReorgError} on a chain reorganization instead of reverting
+   * the orphaned blocks and re-syncing from the fork (default: false). Reorgs
+   * too deep to recover throw {@link DeepReorgError} either way.
+   */
   stopOnReorg?: boolean;
   /** Verify block hashes (default: true) */
   verifyHashes?: boolean;
@@ -130,6 +134,21 @@ export interface ReorganizationInfo {
   newHash: string;
   /** Number of blocks to revert (`height` up to the last synced height) */
   blocksToRevert: number;
+}
+
+/**
+ * Thrown by sync() with `stopOnReorg: true` when the chain was reorganized.
+ * Nothing has been reverted; `info` says where the fork is.
+ */
+export class ReorgError extends Error {
+  constructor(public readonly info: ReorganizationInfo) {
+    super(
+      `Chain reorganization detected at height ${info.height}. ` +
+        `Old hash: ${info.oldHash}, New hash: ${info.newHash}. ` +
+        `Need to revert ${info.blocksToRevert} blocks.`
+    );
+    this.name = 'ReorgError';
+  }
 }
 
 /**
@@ -327,7 +346,7 @@ export class TransactionKeysSync {
       startHeight,
       endHeight,
       onProgress,
-      stopOnReorg = true,
+      stopOnReorg = false,
       verifyHashes = true,
       saveInterval = 100,
       keepTxKeys = false,
@@ -349,11 +368,7 @@ export class TransactionKeysSync {
       reorgInfo = await this.checkReorganization(this.syncState.lastSyncedHeight, chainTip);
       if (reorgInfo) {
         if (stopOnReorg) {
-          throw new Error(
-            `Chain reorganization detected at height ${reorgInfo.height}. ` +
-              `Old hash: ${reorgInfo.oldHash}, New hash: ${reorgInfo.newHash}. ` +
-              `Need to revert ${reorgInfo.blocksToRevert} blocks.`
-          );
+          throw new ReorgError(reorgInfo);
         }
         await this.handleReorganization(reorgInfo, chainTip);
         if (onProgress) {

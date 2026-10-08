@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## [Unreleased]
 
+### Changed
+
+- **`sync()` now recovers from chain reorganizations by default.**
+  `SyncOptions.stopOnReorg` defaulted to `true`, so a plain `sync()` (and
+  `client.sync()`) threw `Chain reorganization detected at height …` on every
+  reorg, including the one-block reorgs that are routine on Navio's PoS chain.
+  It now defaults to `false`: the orphaned blocks are reverted and re-synced.
+  This is a behaviour change for callers that relied on the throw. Passing
+  `stopOnReorg: true` keeps the strict behaviour, but the error is now the
+  exported `ReorgError`, carrying the `ReorganizationInfo` as `info`, rather
+  than a bare `Error`. `ReorganizationInfo.oldHash`/`newHash` now describe the
+  fork block (at `height`) rather than the last synced block.
+
 ### Fixed
 
 - **Blocks replaced by a reorg are now re-scanned.** `sync()` chose its start
