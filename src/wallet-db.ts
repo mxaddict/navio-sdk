@@ -38,6 +38,7 @@ export type { SyncState, WalletOutput, WalletMetadata, StoreOutputParams, IWalle
 
 // WalletOutput is re-exported from wallet-db.interface.ts
 import type { WalletOutput } from './wallet-db.interface';
+import { isStakedCommitmentOutputHex } from './staking';
 
 /**
  * Options for WalletDB
@@ -368,7 +369,8 @@ export class WalletDB {
         spent_block_height INTEGER,
         created_at INTEGER NOT NULL,
         tx_type TEXT NOT NULL DEFAULT 'received',
-        timestamp INTEGER NOT NULL DEFAULT 0
+        timestamp INTEGER NOT NULL DEFAULT 0,
+        is_staked_commitment INTEGER NOT NULL DEFAULT 0
       )
     `);
 
@@ -405,6 +407,18 @@ export class WalletDB {
     } catch {
       // Column already exists – ignore
     }
+    let addedStakedCommitmentColumn = false;
+    try {
+      await this.adapter.run(
+        `ALTER TABLE wallet_outputs ADD COLUMN is_staked_commitment INTEGER NOT NULL DEFAULT 0`
+      );
+      addedStakedCommitmentColumn = true;
+    } catch {
+      // Column already exists – ignore
+    }
+    if (addedStakedCommitmentColumn) {
+      await this.backfillStakedCommitments();
+    }
 
     // Create indexes for wallet_outputs
     await this.adapter.run(`
@@ -416,6 +430,31 @@ export class WalletDB {
     await this.adapter.run(`
       CREATE INDEX IF NOT EXISTS idx_wallet_outputs_is_spent ON wallet_outputs(is_spent)
     `);
+  }
+
+  /**
+   * Flag the staked commitments among outputs stored before the
+   * is_staked_commitment column existed, from their serialized output.
+   */
+  private async backfillStakedCommitments(): Promise<void> {
+    if (!this.adapter) throw new Error('Database not open');
+    const select = await this.adapter.prepare(
+      `SELECT output_hash, output_data FROM wallet_outputs WHERE output_data != ''`
+    );
+    const staked: string[] = [];
+    while (await select.step()) {
+      const row = await select.getAsObject();
+      if (isStakedCommitmentOutputHex(row.output_data as string)) {
+        staked.push(row.output_hash as string);
+      }
+    }
+    await select.free();
+    for (const outputHash of staked) {
+      await this.adapter.run(
+        'UPDATE wallet_outputs SET is_staked_commitment = 1 WHERE output_hash = ?',
+        [outputHash]
+      );
+    }
   }
 
   /**
@@ -1328,14 +1367,14 @@ export class WalletDB {
       `INSERT OR REPLACE INTO wallet_outputs
        (output_hash, tx_hash, output_index, block_height, output_data, amount, gamma, memo, token_id,
         blinding_key, ephemeral_key, spending_key, is_spent, spent_tx_hash, spent_block_height, created_at,
-        tx_type, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        tx_type, timestamp, is_staked_commitment)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     await stmt.run([
       p.outputHash, p.txHash, p.outputIndex, p.blockHeight, p.outputData,
       p.amount, p.gamma, p.memo, p.tokenId, p.blindingKey, p.ephemeralKey ?? null, p.spendingKey,
       p.isSpent ? 1 : 0, p.spentTxHash, p.spentBlockHeight, Date.now(),
-      p.txType, p.timestamp,
+      p.txType, p.timestamp, p.isStakedCommitment ? 1 : 0,
     ]);
     await stmt.free();
   }
@@ -1524,7 +1563,9 @@ export class WalletDB {
       throw new Error('Database not initialized');
     }
 
-    let query = 'SELECT SUM(amount) as total FROM wallet_outputs WHERE is_spent = 0';
+    // Spendable balance: staked commitments are locked for staking.
+    let query =
+      'SELECT SUM(amount) as total FROM wallet_outputs WHERE is_spent = 0 AND is_staked_commitment = 0';
 
     if (tokenId === null) {
       // NAV balance - outputs with no token_id or the default token id in
@@ -1561,9 +1602,9 @@ export class WalletDB {
     let query = `
       SELECT output_hash, tx_hash, output_index, block_height, amount, gamma, memo, token_id, 
              blinding_key, ephemeral_key, spending_key, is_spent, spent_tx_hash, spent_block_height,
-             tx_type, timestamp
+             tx_type, timestamp, is_staked_commitment
       FROM wallet_outputs 
-      WHERE is_spent = 0
+      WHERE is_spent = 0 AND is_staked_commitment = 0
     `;
 
     if (tokenId === null) {
@@ -1598,6 +1639,7 @@ export class WalletDB {
         spentBlockHeight: row.spent_block_height as number | null,
         txType: ((row.tx_type as string) || 'received') as TxType,
         timestamp: (row.timestamp as number) || 0,
+        isStakedCommitment: (row.is_staked_commitment as number) === 1,
       });
     }
     await stmt.free();
@@ -1617,7 +1659,7 @@ export class WalletDB {
     const stmt = await this.adapter.prepare(`
       SELECT output_hash, tx_hash, output_index, block_height, amount, gamma, memo, token_id, 
              blinding_key, ephemeral_key, spending_key, is_spent, spent_tx_hash, spent_block_height,
-             tx_type, timestamp
+             tx_type, timestamp, is_staked_commitment
       FROM wallet_outputs 
       ORDER BY block_height ASC
     `);
@@ -1642,6 +1684,7 @@ export class WalletDB {
         spentBlockHeight: row.spent_block_height as number | null,
         txType: ((row.tx_type as string) || 'received') as TxType,
         timestamp: (row.timestamp as number) || 0,
+        isStakedCommitment: (row.is_staked_commitment as number) === 1,
       });
     }
     await stmt.free();
