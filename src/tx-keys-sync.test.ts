@@ -16,7 +16,13 @@ import {
   deriveCollectionTokenPublicKeyFromMaster,
   getCTxOutBlindingKey,
 } from '@nav-io/navio-blsct';
-import { TransactionKeysSync, SyncState, DeepReorgError, MAX_REORG_DEPTH, ReorgError } from './tx-keys-sync';
+import {
+  TransactionKeysSync,
+  SyncState,
+  DeepReorgError,
+  MAX_REORG_DEPTH,
+  ReorgError,
+} from './tx-keys-sync';
 import { WalletDB } from './wallet-db';
 import { SyncProvider, ChainTip, BlockHeadersResult } from './sync-provider';
 import type { BlockTransactionKeys, TransactionKeys } from './electrum';
@@ -25,7 +31,9 @@ import { sha256 } from '@noble/hashes/sha256';
 
 /** Block hash as the SDK computes it: double SHA-256 of the header, byte-reversed. */
 function hashHeader(headerHex: string): string {
-  return Buffer.from(sha256(sha256(Buffer.from(headerHex, 'hex')))).reverse().toString('hex');
+  return Buffer.from(sha256(sha256(Buffer.from(headerHex, 'hex'))))
+    .reverse()
+    .toString('hex');
 }
 
 /** The header the mock serves at a height nobody overrode (80 bytes = 160 hex chars). */
@@ -61,10 +69,17 @@ function createMockSyncProvider(options: {
     disconnect: vi.fn(),
     isConnected: vi.fn().mockReturnValue(true),
     getChainTipHeight: vi.fn().mockImplementation(() => Promise.resolve(chainTipHeight)),
-    getChainTip: vi.fn().mockImplementation(() =>
-      Promise.resolve({ height: chainTipHeight, hash: hashHeader(headerAt(chainTipHeight)) } as ChainTip)
-    ),
-    getBlockHeader: vi.fn().mockImplementation((height: number) => Promise.resolve(headerAt(height))),
+    getChainTip: vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve({
+          height: chainTipHeight,
+          hash: hashHeader(headerAt(chainTipHeight)),
+        } as ChainTip)
+      ),
+    getBlockHeader: vi
+      .fn()
+      .mockImplementation((height: number) => Promise.resolve(headerAt(height))),
     getBlockHeaders: vi.fn().mockImplementation((startHeight: number, count: number) => {
       let hex = '';
       for (let i = 0; i < count; i++) {
@@ -108,7 +123,11 @@ describe('TransactionKeysSync', () => {
     await walletDB.close();
   });
 
-  function output(outputHash: string, blockHeight: number, spent?: { txHash: string; height: number }): StoreOutputParams {
+  function output(
+    outputHash: string,
+    blockHeight: number,
+    spent?: { txHash: string; height: number }
+  ): StoreOutputParams {
     return {
       outputHash,
       txHash: `tx-${outputHash}`,
@@ -130,10 +149,18 @@ describe('TransactionKeysSync', () => {
     };
   }
 
-  async function outputRow(outputHash: string): Promise<{ isSpent: number; spentTxHash: string | null; spentBlockHeight: number | null } | null> {
-    const stmt = await walletDB.getAdapter().prepare(
-      'SELECT is_spent, spent_tx_hash, spent_block_height FROM wallet_outputs WHERE output_hash = ?'
-    );
+  async function outputRow(
+    outputHash: string
+  ): Promise<{
+    isSpent: number;
+    spentTxHash: string | null;
+    spentBlockHeight: number | null;
+  } | null> {
+    const stmt = await walletDB
+      .getAdapter()
+      .prepare(
+        'SELECT is_spent, spent_tx_hash, spent_block_height FROM wallet_outputs WHERE output_hash = ?'
+      );
     stmt.bind([outputHash]);
     const found = await stmt.step();
     const row = await stmt.getAsObject();
@@ -318,7 +345,7 @@ describe('TransactionKeysSync', () => {
       await syncManager.sync({ startHeight: 0 });
       for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
 
-      const error = await syncManager.sync({ stopOnReorg: true }).catch((e) => e);
+      const error = await syncManager.sync({ stopOnReorg: true }).catch(e => e);
 
       expect(error).toBeInstanceOf(ReorgError);
       expect(error.message).toMatch(/reorganization detected at height 58/i);
@@ -338,7 +365,10 @@ describe('TransactionKeysSync', () => {
      * Sync a wallet to height 60, give it outputs on both sides of a fork at
      * 58 plus mempool rows, then replace blocks 58..60 and grow the tip to 62.
      */
-    async function syncThenReorg(): Promise<{ blockHeaders: Map<number, string>; provider: MockSyncProvider }> {
+    async function syncThenReorg(): Promise<{
+      blockHeaders: Map<number, string>;
+      provider: MockSyncProvider;
+    }> {
       const blockHeaders = new Map<number, string>();
       const provider = createMockSyncProvider({ chainTipHeight: 60, blockHeaders });
       syncManager = new TransactionKeysSync(walletDB, provider);
@@ -348,10 +378,16 @@ describe('TransactionKeysSync', () => {
 
       await walletDB.storeWalletOutput(output('kept-at-50', 50));
       await walletDB.storeWalletOutput(output('orphaned-at-58', 58));
-      await walletDB.storeWalletOutput(output('spent-at-59', 40, { txHash: 'orphaned-spend', height: 59 }));
-      await walletDB.storeWalletOutput(output('spent-at-57', 40, { txHash: 'kept-spend', height: 57 }));
+      await walletDB.storeWalletOutput(
+        output('spent-at-59', 40, { txHash: 'orphaned-spend', height: 59 })
+      );
+      await walletDB.storeWalletOutput(
+        output('spent-at-57', 40, { txHash: 'kept-spend', height: 57 })
+      );
       await walletDB.storeWalletOutput(output('mempool-output', 0));
-      await walletDB.storeWalletOutput(output('spent-in-mempool', 45, { txHash: 'mempool-tx', height: 0 }));
+      await walletDB.storeWalletOutput(
+        output('spent-in-mempool', 45, { txHash: 'mempool-tx', height: 0 })
+      );
 
       for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
       provider.setChainTip(62);
@@ -365,10 +401,22 @@ describe('TransactionKeysSync', () => {
 
       expect(await outputRow('kept-at-50')).not.toBeNull();
       expect(await outputRow('orphaned-at-58')).toBeNull();
-      expect(await outputRow('spent-at-59')).toEqual({ isSpent: 0, spentTxHash: null, spentBlockHeight: null });
-      expect(await outputRow('spent-at-57')).toEqual({ isSpent: 1, spentTxHash: 'kept-spend', spentBlockHeight: 57 });
+      expect(await outputRow('spent-at-59')).toEqual({
+        isSpent: 0,
+        spentTxHash: null,
+        spentBlockHeight: null,
+      });
+      expect(await outputRow('spent-at-57')).toEqual({
+        isSpent: 1,
+        spentTxHash: 'kept-spend',
+        spentBlockHeight: 57,
+      });
       expect(await outputRow('mempool-output')).not.toBeNull();
-      expect(await outputRow('spent-in-mempool')).toEqual({ isSpent: 1, spentTxHash: 'mempool-tx', spentBlockHeight: 0 });
+      expect(await outputRow('spent-in-mempool')).toEqual({
+        isSpent: 1,
+        spentTxHash: 'mempool-tx',
+        spentBlockHeight: 0,
+      });
       expect(syncManager.getLastSyncedHeight()).toBe(62);
     });
 
@@ -391,7 +439,11 @@ describe('TransactionKeysSync', () => {
 
       expect(await walletDB.loadSyncState()).toEqual(stateBefore);
       expect(await outputRow('orphaned-at-58')).not.toBeNull();
-      expect(await outputRow('spent-at-59')).toEqual({ isSpent: 1, spentTxHash: 'orphaned-spend', spentBlockHeight: 59 });
+      expect(await outputRow('spent-at-59')).toEqual({
+        isSpent: 1,
+        spentTxHash: 'orphaned-spend',
+        spentBlockHeight: 59,
+      });
       expect(await walletDB.getBlockHash(59)).toBe(hashHeader(defaultHeader(59)));
     });
   });
@@ -415,13 +467,18 @@ describe('TransactionKeysSync', () => {
     it('reverts and re-scans the replacement block after a 1-block reorg', async () => {
       const { provider, blockHeaders, blockTxKeys } = await syncedWallet(60);
       await walletDB.storeWalletOutput(output('orphaned-at-60', 60));
-      await walletDB.storeWalletOutput(output('spent-at-60', 40, { txHash: 'orphaned-spend', height: 60 }));
+      await walletDB.storeWalletOutput(
+        output('spent-at-60', 40, { txHash: 'orphaned-spend', height: 60 })
+      );
       await walletDB.storeWalletOutput(output('spent-by-new-60', 40));
 
       // Block 60 is replaced by one that spends a different wallet output.
       blockHeaders.set(60, branchHeader(60));
       blockTxKeys.set(60, [
-        { txHash: 'replacement-spend', keys: { inputs: [{ outputHash: 'spent-by-new-60' }], outputs: [] } },
+        {
+          txHash: 'replacement-spend',
+          keys: { inputs: [{ outputHash: 'spent-by-new-60' }], outputs: [] },
+        },
       ]);
       provider.setChainTip(61);
       vi.mocked(provider.getBlockTransactionKeysRange).mockClear();
@@ -430,7 +487,11 @@ describe('TransactionKeysSync', () => {
       await syncManager.sync({ onProgress });
 
       expect(await outputRow('orphaned-at-60')).toBeNull();
-      expect(await outputRow('spent-at-60')).toEqual({ isSpent: 0, spentTxHash: null, spentBlockHeight: null });
+      expect(await outputRow('spent-at-60')).toEqual({
+        isSpent: 0,
+        spentTxHash: null,
+        spentBlockHeight: null,
+      });
       // Only a re-scan of height 60 can have recorded this spend.
       expect(rangeFetchHeights(provider)[0]).toBe(60);
       expect(await outputRow('spent-by-new-60')).toEqual({
@@ -495,10 +556,14 @@ describe('TransactionKeysSync', () => {
       vi.mocked(provider.getBlockHeader).mockClear();
       vi.mocked(provider.getBlockHeaders).mockClear();
 
-      const error = await syncManager.sync().catch((e) => e);
+      const error = await syncManager.sync().catch(e => e);
 
       expect(error).toBeInstanceOf(DeepReorgError);
-      expect(error).toMatchObject({ reason: 'too-deep', lastSyncedHeight: tip, searchedDownTo: tip - MAX_REORG_DEPTH });
+      expect(error).toMatchObject({
+        reason: 'too-deep',
+        lastSyncedHeight: tip,
+        searchedDownTo: tip - MAX_REORG_DEPTH,
+      });
       expect(provider.getBlockHeader).toHaveBeenCalledTimes(1);
       expect(provider.getBlockHeaders).toHaveBeenCalledTimes(1);
       expect(syncManager.getLastSyncedHeight()).toBe(tip);
@@ -512,10 +577,14 @@ describe('TransactionKeysSync', () => {
       vi.mocked(provider.getBlockHeader).mockClear();
       vi.mocked(provider.getBlockHeaders).mockClear();
 
-      const error = await syncManager.sync().catch((e) => e);
+      const error = await syncManager.sync().catch(e => e);
 
       expect(error).toBeInstanceOf(DeepReorgError);
-      expect(error).toMatchObject({ reason: 'missing-history', lastSyncedHeight: 60, searchedDownTo: 57 });
+      expect(error).toMatchObject({
+        reason: 'missing-history',
+        lastSyncedHeight: 60,
+        searchedDownTo: 57,
+      });
       expect(provider.getBlockHeader).toHaveBeenCalledTimes(1);
       expect(provider.getBlockHeaders).toHaveBeenCalledTimes(1);
       expect(syncManager.getLastSyncedHeight()).toBe(60);

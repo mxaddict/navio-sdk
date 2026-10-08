@@ -583,7 +583,11 @@ export class TransactionKeysSync {
   private async heldBlockHash(height: number): Promise<string | null> {
     const stored = await this.getStoredBlockHash(height);
     if (stored) return stored;
-    if (this.syncState && height === this.syncState.lastSyncedHeight && this.syncState.lastSyncedHash) {
+    if (
+      this.syncState &&
+      height === this.syncState.lastSyncedHeight &&
+      this.syncState.lastSyncedHash
+    ) {
       return this.syncState.lastSyncedHash;
     }
     return null;
@@ -605,7 +609,10 @@ export class TransactionKeysSync {
    * @throws DeepReorgError if no matching block is found within the depth
    *   limit, or the walk reaches a height with no stored hash
    */
-  private async checkReorganization(lastSynced: number, chainTip: number): Promise<ReorganizationInfo | null> {
+  private async checkReorganization(
+    lastSynced: number,
+    chainTip: number
+  ): Promise<ReorganizationInfo | null> {
     if (!this.syncState || lastSynced < 0) {
       return null;
     }
@@ -625,16 +632,20 @@ export class TransactionKeysSync {
     }
 
     const maxDepth =
-      this.blockHashRetention > 0 ? Math.min(MAX_REORG_DEPTH, this.blockHashRetention) : MAX_REORG_DEPTH;
+      this.blockHashRetention > 0
+        ? Math.min(MAX_REORG_DEPTH, this.blockHashRetention)
+        : MAX_REORG_DEPTH;
     const lowest = Math.max(0, lastSynced - maxDepth);
-    const headers = top > lowest ? await this.fetchHeaderChunk(lowest, top - lowest) : new Map<number, string>();
+    const headers =
+      top > lowest ? await this.fetchHeaderChunk(lowest, top - lowest) : new Map<number, string>();
 
     // Hashes at the lowest diverging height found so far: the fork block.
     let oldHash = heldTop;
     let newHash = serverTop;
     for (let height = top - 1; height >= lowest; height--) {
       const headerHex =
-        headers.get(height) ?? (await this.withRetry(() => this.syncProvider.getBlockHeader(height)));
+        headers.get(height) ??
+        (await this.withRetry(() => this.syncProvider.getBlockHeader(height)));
       const serverHash = this.extractBlockHash(headerHex);
       const storedHash = await this.getStoredBlockHash(height);
       if (storedHash === null) {
@@ -659,7 +670,10 @@ export class TransactionKeysSync {
    * Handle chain reorganization
    * @param reorgInfo - Reorganization information
    */
-  private async handleReorganization(reorgInfo: ReorganizationInfo, chainTip: number): Promise<void> {
+  private async handleReorganization(
+    reorgInfo: ReorganizationInfo,
+    chainTip: number
+  ): Promise<void> {
     const forkParent = reorgInfo.height - 1;
     const newState: SyncState = {
       lastSyncedHeight: forkParent,
