@@ -16,7 +16,7 @@ import {
   deriveCollectionTokenPublicKeyFromMaster,
   getCTxOutBlindingKey,
 } from '@nav-io/navio-blsct';
-import { TransactionKeysSync, SyncState } from './tx-keys-sync';
+import { TransactionKeysSync, SyncState, DeepReorgError, MAX_REORG_DEPTH } from './tx-keys-sync';
 import { WalletDB } from './wallet-db';
 import { SyncProvider, ChainTip, BlockHeadersResult } from './sync-provider';
 import type { BlockTransactionKeys, TransactionKeys } from './electrum';
@@ -486,6 +486,66 @@ describe('TransactionKeysSync', () => {
 
       expect(rangeFetchHeights(provider)[0]).toBe(60);
       expect(await walletDB.getBlockHash(60)).toBe(hashHeader(branchHeader(60)));
+    });
+
+    it('finds the fork point of a 3-block reorg', async () => {
+      const { provider, blockHeaders } = await syncedWallet(60);
+      for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
+      vi.mocked(provider.getBlockTransactionKeysRange).mockClear();
+      const onProgress = vi.fn();
+
+      await syncManager.sync({ stopOnReorg: false, onProgress });
+
+      expect(onProgress).toHaveBeenCalledWith(57, 60, 0, 0, true);
+      expect(rangeFetchHeights(provider)[0]).toBe(58);
+      expect(await walletDB.getBlockHash(57)).toBe(hashHeader(defaultHeader(57)));
+      for (let h = 58; h <= 60; h++) {
+        expect(await walletDB.getBlockHash(h)).toBe(hashHeader(branchHeader(h)));
+      }
+    });
+
+    it('gives up with DeepReorgError past MAX_REORG_DEPTH instead of walking to genesis', async () => {
+      const tip = MAX_REORG_DEPTH + 50;
+      const { provider, blockHeaders } = await syncedWallet(tip);
+      for (let h = 0; h <= tip; h++) blockHeaders.set(h, branchHeader(h));
+      vi.mocked(provider.getBlockHeader).mockClear();
+      vi.mocked(provider.getBlockHeaders).mockClear();
+
+      const error = await syncManager.sync({ stopOnReorg: false }).catch((e) => e);
+
+      expect(error).toBeInstanceOf(DeepReorgError);
+      expect(error).toMatchObject({ reason: 'too-deep', lastSyncedHeight: tip, searchedDownTo: tip - MAX_REORG_DEPTH });
+      expect(provider.getBlockHeader).toHaveBeenCalledTimes(1);
+      expect(provider.getBlockHeaders).toHaveBeenCalledTimes(1);
+      expect(syncManager.getLastSyncedHeight()).toBe(tip);
+      expect(await walletDB.getBlockHash(tip)).toBe(hashHeader(defaultHeader(tip)));
+    });
+
+    it('gives up with DeepReorgError when the fork is below the stored hashes', async () => {
+      const { provider, blockHeaders } = await syncedWallet(60);
+      await walletDB.deleteBlockHash(57); // as blockHashRetention pruning would
+      for (let h = 58; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
+      vi.mocked(provider.getBlockHeader).mockClear();
+      vi.mocked(provider.getBlockHeaders).mockClear();
+
+      const error = await syncManager.sync({ stopOnReorg: false }).catch((e) => e);
+
+      expect(error).toBeInstanceOf(DeepReorgError);
+      expect(error).toMatchObject({ reason: 'missing-history', lastSyncedHeight: 60, searchedDownTo: 57 });
+      expect(provider.getBlockHeader).toHaveBeenCalledTimes(1);
+      expect(provider.getBlockHeaders).toHaveBeenCalledTimes(1);
+      expect(syncManager.getLastSyncedHeight()).toBe(60);
+    });
+
+    it('does not revert when the server is merely behind the wallet', async () => {
+      const { provider } = await syncedWallet(60);
+      provider.setChainTip(58);
+
+      await syncManager.sync();
+
+      expect(syncManager.getLastSyncedHeight()).toBe(60);
+      expect(await walletDB.getBlockHash(60)).toBe(hashHeader(defaultHeader(60)));
+      expect(await syncManager.isSyncNeeded()).toBe(false);
     });
   });
 

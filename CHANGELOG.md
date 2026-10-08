@@ -17,6 +17,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   such a replaced tip by comparing the provider's tip hash with the stored
   one. `onProgress` now receives `isReorg = true` once after a revert; it was
   always `false`.
+- **The fork search is bounded.** Finding a reorg's fork point fetched one
+  header per height with no limit, and a height whose hash had been pruned by
+  `blockHashRetention` never matched, so it walked all the way to genesis. It
+  now fetches the headers below the mismatch in one batch, goes back at most
+  `MAX_REORG_DEPTH` (exported, 100) blocks or `blockHashRetention`, whichever
+  is smaller, and throws the new exported `DeepReorgError` (with
+  `lastSyncedHeight`, `searchedDownTo` and `reason`) when it runs out of depth
+  or stored hashes, leaving the wallet untouched; recover with
+  `resetSyncState()` and a fresh sync. A server whose tip is below the
+  wallet's is compared at its tip instead of being asked for a block it does
+  not have.
 - **A reorg revert is now atomic.** Reverting orphaned blocks deleted their
   rows height by height and only then saved the new sync state, so a crash
   part-way could delete the stored hash of the last synced block and the reorg

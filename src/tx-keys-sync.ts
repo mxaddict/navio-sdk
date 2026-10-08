@@ -122,14 +122,53 @@ export interface BackgroundSyncOptions extends SyncOptions {
  * Reorganization information
  */
 export interface ReorganizationInfo {
-  /** Height where reorganization occurred */
+  /** Fork height: the first block that differs between the two chains */
   height: number;
-  /** Old block hash */
+  /** Hash of the block the wallet had synced at `height` */
   oldHash: string;
-  /** New block hash */
+  /** Hash of the server's block at `height` */
   newHash: string;
-  /** Number of blocks to revert */
+  /** Number of blocks to revert (`height` up to the last synced height) */
   blocksToRevert: number;
+}
+
+/**
+ * How many blocks back sync() searches for the fork point of a reorg.
+ *
+ * Navio's PoS chain normally reorganizes by one or two blocks; 100 leaves a
+ * wide margin while keeping the search to a single header request of at most
+ * 100 headers. It is further capped by `blockHashRetention`, since the hashes
+ * to compare against are pruned below it. A deeper reorg throws
+ * {@link DeepReorgError} rather than walking back towards genesis.
+ */
+export const MAX_REORG_DEPTH = 100;
+
+/**
+ * Thrown by sync() when a reorg's fork point cannot be found: it is deeper
+ * than {@link MAX_REORG_DEPTH} (or `blockHashRetention`), or the walk reached
+ * a height whose hash the wallet no longer stores. The wallet is left as it
+ * was. Recover with `resetSyncState()` on the TransactionKeysSync
+ * (`client.getSyncManager()`) and a fresh sync.
+ */
+export class DeepReorgError extends Error {
+  constructor(
+    /** Last synced height when the reorg was detected */
+    public readonly lastSyncedHeight: number,
+    /** Lowest height compared with the server */
+    public readonly searchedDownTo: number,
+    /** 'too-deep': no match within the depth limit; 'missing-history': no stored hash at `searchedDownTo` */
+    public readonly reason: 'too-deep' | 'missing-history'
+  ) {
+    super(
+      (reason === 'too-deep'
+        ? `Chain reorganization below height ${lastSyncedHeight} is deeper than the search limit: ` +
+          `no common block found down to height ${searchedDownTo}. `
+        : `Chain reorganization below height ${lastSyncedHeight} reaches height ${searchedDownTo}, ` +
+          'where no block hash is stored (pruned by blockHashRetention, or never synced). ') +
+        'Call resetSyncState() and sync again.'
+    );
+    this.name = 'DeepReorgError';
+  }
 }
 
 /**
@@ -266,15 +305,11 @@ export class TransactionKeysSync {
     }
 
     const tip = await this.syncProvider.getChainTip();
-    const { lastSyncedHeight, lastSyncedHash } = this.syncState;
-    if (tip.height > lastSyncedHeight) {
+    if (tip.height > this.syncState.lastSyncedHeight) {
       return true;
     }
 
-    const heldHash =
-      tip.height === lastSyncedHeight && lastSyncedHash
-        ? lastSyncedHash
-        : await this.getStoredBlockHash(tip.height);
+    const heldHash = await this.heldBlockHash(tip.height);
     return Boolean(tip.hash && heldHash && tip.hash.toLowerCase() !== heldHash.toLowerCase());
   }
 
@@ -310,8 +345,8 @@ export class TransactionKeysSync {
     // there on must be scanned. This also runs when the tip did not advance,
     // since a reorg can replace the tip block at the same height.
     let reorgInfo: ReorganizationInfo | null = null;
-    if (this.syncState && verifyHashes && this.syncState.lastSyncedHeight <= chainTip) {
-      reorgInfo = await this.checkReorganization(this.syncState.lastSyncedHeight);
+    if (this.syncState && verifyHashes) {
+      reorgInfo = await this.checkReorganization(this.syncState.lastSyncedHeight, chainTip);
       if (reorgInfo) {
         if (stopOnReorg) {
           throw new Error(
@@ -527,45 +562,82 @@ export class TransactionKeysSync {
   }
 
   /**
-   * Check for chain reorganization
-   * @param height - Height to check
-   * @returns Reorganization info if detected, null otherwise
+   * The hash of the block the wallet synced at `height`: the stored block
+   * hash, or for the last synced height the hash kept in the sync state.
    */
-  private async checkReorganization(height: number): Promise<ReorganizationInfo | null> {
-    if (!this.syncState || height < 0) {
+  private async heldBlockHash(height: number): Promise<string | null> {
+    const stored = await this.getStoredBlockHash(height);
+    if (stored) return stored;
+    if (this.syncState && height === this.syncState.lastSyncedHeight && this.syncState.lastSyncedHash) {
+      return this.syncState.lastSyncedHash;
+    }
+    return null;
+  }
+
+  /**
+   * Check whether the chain the wallet synced is still the server's chain,
+   * and if not, find the fork point.
+   *
+   * Compares the block at the last synced height (or at the server's tip, if
+   * the server is behind) with the one the wallet holds. On a mismatch it
+   * fetches the headers below in one batch and walks down to the highest
+   * height where the stored hash still matches, at most {@link MAX_REORG_DEPTH}
+   * blocks (and never past `blockHashRetention`).
+   *
+   * @param lastSynced - Last synced height
+   * @param chainTip - Server chain tip height
+   * @returns Reorganization info if detected, null otherwise
+   * @throws DeepReorgError if no matching block is found within the depth
+   *   limit, or the walk reaches a height with no stored hash
+   */
+  private async checkReorganization(lastSynced: number, chainTip: number): Promise<ReorganizationInfo | null> {
+    if (!this.syncState || lastSynced < 0) {
       return null;
     }
 
-    // Get current block hash from server
-    const currentHeader = await this.syncProvider.getBlockHeader(height);
-    const currentHash = this.extractBlockHash(currentHeader);
-
-    // Get stored block hash
-    const storedHash = await this.getStoredBlockHash(height);
-
-    if (storedHash && storedHash !== currentHash) {
-      // Reorganization detected - find common ancestor
-      let commonHeight = height - 1;
-      while (commonHeight >= 0) {
-        const commonHeader = await this.syncProvider.getBlockHeader(commonHeight);
-        const commonHash = this.extractBlockHash(commonHeader);
-        const storedCommonHash = await this.getStoredBlockHash(commonHeight);
-
-        if (storedCommonHash === commonHash) {
-          break;
-        }
-        commonHeight--;
-      }
-
-      return {
-        height: commonHeight + 1,
-        oldHash: storedHash,
-        newHash: currentHash,
-        blocksToRevert: height - commonHeight,
-      };
+    // A server behind us (or a chain that got shorter) is compared at its tip:
+    // a match there means nothing to revert yet.
+    const top = Math.min(lastSynced, chainTip);
+    const heldTop = await this.heldBlockHash(top);
+    if (!heldTop) {
+      return null; // nothing recorded to compare against
+    }
+    const serverTop = this.extractBlockHash(
+      await this.withRetry(() => this.syncProvider.getBlockHeader(top))
+    );
+    if (serverTop === heldTop) {
+      return null;
     }
 
-    return null;
+    const maxDepth =
+      this.blockHashRetention > 0 ? Math.min(MAX_REORG_DEPTH, this.blockHashRetention) : MAX_REORG_DEPTH;
+    const lowest = Math.max(0, lastSynced - maxDepth);
+    const headers = top > lowest ? await this.fetchHeaderChunk(lowest, top - lowest) : new Map<number, string>();
+
+    // Hashes at the lowest diverging height found so far: the fork block.
+    let oldHash = heldTop;
+    let newHash = serverTop;
+    for (let height = top - 1; height >= lowest; height--) {
+      const headerHex =
+        headers.get(height) ?? (await this.withRetry(() => this.syncProvider.getBlockHeader(height)));
+      const serverHash = this.extractBlockHash(headerHex);
+      const storedHash = await this.getStoredBlockHash(height);
+      if (storedHash === null) {
+        throw new DeepReorgError(lastSynced, height, 'missing-history');
+      }
+      if (storedHash === serverHash) {
+        return {
+          height: height + 1,
+          oldHash,
+          newHash,
+          blocksToRevert: lastSynced - height,
+        };
+      }
+      oldHash = storedHash;
+      newHash = serverHash;
+    }
+
+    throw new DeepReorgError(lastSynced, lowest, 'too-deep');
   }
 
   /**
