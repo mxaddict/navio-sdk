@@ -3,6 +3,16 @@
 All notable changes to navio-sdk are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`DeepReorgError.reason` is `too-deep` at the `blockHashRetention` limit.**
+  The fork search went one height below the oldest retained block hash, so a
+  reorg deeper than retention allows reported `missing-history` instead. The
+  search now stops at `blockHashRetention - 1` blocks. Only `reason` and
+  `searchedDownTo` change; it is still a `DeepReorgError`.
+
 ## [0.3.0] - 2026-10-08
 
 ### Changed

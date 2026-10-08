@@ -450,12 +450,16 @@ describe('TransactionKeysSync', () => {
 
   describe('reorganization recovery', () => {
     /** Sync a fresh wallet from genesis to `tip` on the default chain. */
-    async function syncedWallet(tip: number, blockTxKeys = new Map<number, TransactionKeys[]>()) {
+    async function syncedWallet(
+      tip: number,
+      blockTxKeys = new Map<number, TransactionKeys[]>(),
+      blockHashRetention?: number
+    ) {
       const blockHeaders = new Map<number, string>();
       const provider = createMockSyncProvider({ chainTipHeight: tip, blockHeaders, blockTxKeys });
       syncManager = new TransactionKeysSync(walletDB, provider);
       await syncManager.initialize();
-      await syncManager.sync({ startHeight: 0 });
+      await syncManager.sync({ startHeight: 0, blockHashRetention });
       expect(syncManager.getLastSyncedHeight()).toBe(tip);
       return { provider, blockHeaders, blockTxKeys };
     }
@@ -588,6 +592,36 @@ describe('TransactionKeysSync', () => {
       expect(provider.getBlockHeader).toHaveBeenCalledTimes(1);
       expect(provider.getBlockHeaders).toHaveBeenCalledTimes(1);
       expect(syncManager.getLastSyncedHeight()).toBe(60);
+    });
+
+    describe('at the blockHashRetention limit', () => {
+      // Retention 20 at tip 60 keeps the hashes of heights 41..60.
+      const retention = 20;
+
+      it('recovers from a reorg as deep as the retained hashes allow', async () => {
+        const { blockHeaders } = await syncedWallet(60, undefined, retention);
+        for (let h = 42; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
+
+        await syncManager.sync({ blockHashRetention: retention });
+
+        expect(await walletDB.getBlockHash(41)).toBe(hashHeader(defaultHeader(41)));
+        expect(await walletDB.getBlockHash(42)).toBe(hashHeader(branchHeader(42)));
+        expect(syncManager.getLastSyncedHeight()).toBe(60);
+      });
+
+      it('reports a reorg one block deeper as too-deep, not missing-history', async () => {
+        const { blockHeaders } = await syncedWallet(60, undefined, retention);
+        for (let h = 41; h <= 60; h++) blockHeaders.set(h, branchHeader(h));
+
+        const error = await syncManager.sync({ blockHashRetention: retention }).catch(e => e);
+
+        expect(error).toBeInstanceOf(DeepReorgError);
+        expect(error).toMatchObject({
+          reason: 'too-deep',
+          lastSyncedHeight: 60,
+          searchedDownTo: 41,
+        });
+      });
     });
 
     it('does not revert when the server is merely behind the wallet', async () => {
