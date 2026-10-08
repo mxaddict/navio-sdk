@@ -168,6 +168,10 @@ export const MAX_REORG_DEPTH = 100;
  * a height whose hash the wallet no longer stores. The wallet is left as it
  * was. Recover with `resetSyncState()` on the TransactionKeysSync
  * (`client.getSyncManager()`) and a fresh sync.
+ *
+ * No hashes exist below the first height the wallet synced (its creation or
+ * restore height), so a reorg reaching below it throws with `reason`
+ * `'missing-history'` however shallow it is.
  */
 export class DeepReorgError extends Error {
   constructor(
