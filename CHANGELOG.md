@@ -12,6 +12,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   reorg deeper than retention allows reported `missing-history` instead. The
   search now stops at `blockHashRetention - 1` blocks. Only `reason` and
   `searchedDownTo` change; it is still a `DeepReorgError`.
+- **Outputs with long scripts or predicates are read correctly during sync.**
+  Sync parsed each wallet output with its own hand-written reader, which took
+  the scriptPubKey length as one byte. A staked commitment's script is
+  hundreds of bytes long, behind a multi-byte CompactSize length, so every
+  field after it was read from the wrong offset, including the ephemeral key
+  stored for the output and the range proof handed to amount recovery. Sync
+  now uses the P2P block parser's output reader, which `parseOutputHex`
+  exposes for a single serialized output. `ParsedOutput` gains
+  `transparentValue`, `scriptPubKeyHex`, `rangeProofHex`, `tokenIdHex` and
+  `predicateHex`.
 
 ## [0.3.0] - 2026-10-08
 

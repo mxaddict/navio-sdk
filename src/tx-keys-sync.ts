@@ -16,6 +16,7 @@ import type { IWalletDB, SyncState, TxType } from './wallet-db.interface';
 import * as blsctModule from '@nav-io/navio-blsct';
 import { sha256 } from '@noble/hashes/sha256';
 import { canonicalAnchorOutid, searchBlindingKey } from './blinding-key';
+import { parseOutputHex } from './p2p-block-parser';
 
 /**
  * Serialization of an empty bulletproofs+ range proof: just the zero Vs
@@ -1271,9 +1272,9 @@ export class TransactionKeysSync {
   }
 
   /**
-   * Extract range proof from serialized CTxOut data
+   * Extract the fields amount recovery needs from a serialized CTxOut, with
+   * the same parser the P2P path uses. All null when it does not parse.
    * @param outputHex - Serialized output data (hex)
-   * @returns Object containing rangeProofHex and tokenIdHex
    */
   private extractRangeProofFromOutput(outputHex: string): {
     rangeProofHex: string | null;
@@ -1282,112 +1283,14 @@ export class TransactionKeysSync {
     ephemeralKeyHex: string | null;
   } {
     try {
-      const data = Buffer.from(outputHex, 'hex');
-      let offset = 0;
-
-      // CTxOut serialization format:
-      // - value (8 bytes) - either transparent or MAX_AMOUNT marker
-      // - if MAX_AMOUNT: flags (8 bytes)
-      // - if flags & TRANSPARENT_VALUE: transparent value (8 bytes)
-      // - scriptPubKey (varint length + data)
-      // - if flags & HAS_BLSCT_KEYS: rangeProof + blsctData
-      // - if flags & HAS_TOKENID: tokenId (40 bytes = 32-byte hash + 8-byte subid)
-      // - if flags & HAS_PREDICATE: predicate (varint length + data)
-
-      const MAX_AMOUNT = 0x7fffffffffffffffn;
-      const HAS_BLSCT_KEYS = 1n;
-      const HAS_TOKENID = 2n;
-      const TOKEN_ID_SIZE = 40;
-
-      // Read value. Two encodings:
-      //  - plain: `value` IS the transparent amount (non-BLSCT outputs);
-      //  - extended: value == MAX_AMOUNT sentinel, then a flags word, and —
-      //    when TRANSPARENT_VALUE_MARKER (bit 3) is set — an 8-byte
-      //    transparent amount. Token/NFT mint outputs use this: their amount
-      //    is NOT in the range proof (which commits to 0), it is this
-      //    transparent field. Capture it so the caller can use it instead of
-      //    range-proof recovery, which would otherwise read the amount as 0.
-      const TRANSPARENT_VALUE_MARKER = 8n;
-      const value = data.readBigInt64LE(offset);
-      offset += 8;
-
-      let flags = 0n;
-      let transparentValue: bigint | null = null;
-      if (value === MAX_AMOUNT) {
-        flags = data.readBigUInt64LE(offset);
-        offset += 8;
-
-        if ((flags & TRANSPARENT_VALUE_MARKER) !== 0n) {
-          transparentValue = data.readBigInt64LE(offset);
-          offset += 8;
-        }
-      } else {
-        transparentValue = value;
-      }
-
-      // Skip scriptPubKey
-      const scriptLen = data[offset];
-      offset += 1 + scriptLen;
-
-      let rangeProofHex: string | null = null;
-      let tokenIdHex: string | null = null;
-      let ephemeralKeyHex: string | null = null;
-
-      // Extract range proof if present
-      if ((flags & HAS_BLSCT_KEYS) !== 0n) {
-        // Range proof structure:
-        // - Vs: vector of G1 points (varint count + 48 bytes each)
-        // - If Vs.size > 0:
-        //   - Ls: vector of G1 points
-        //   - Rs: vector of G1 points  
-        //   - A, A_wip, B: 3 G1 points (48 bytes each)
-        //   - r', s', delta', alpha_hat, tau_x: 5 scalars (32 bytes each)
-        // - spendingKey, blindingKey, ephemeralKey: 3 G1 points (48 bytes each)
-        // - viewTag: 2 bytes
-        
-        const rangeProofStart = offset;
-        
-        // Parse Vs
-        const vsCount = data[offset];
-        offset += 1;
-        offset += vsCount * 48;
-        
-        if (vsCount > 0) {
-          // Ls
-          const lsCount = data[offset];
-          offset += 1;
-          offset += lsCount * 48;
-          
-          // Rs
-          const rsCount = data[offset];
-          offset += 1;
-          offset += rsCount * 48;
-          
-          // A, A_wip, B (3 points)
-          offset += 3 * 48;
-          
-          // 5 scalars: r', s', delta', alpha_hat, tau_x
-          offset += 5 * 32;
-        }
-        
-        const rangeProofEnd = offset;
-        rangeProofHex = data.subarray(rangeProofStart, rangeProofEnd).toString('hex');
-        
-        // BLSCT keys: spendingKey, blindingKey, ephemeralKey (48 bytes each),
-        // then a 2-byte viewTag. The ephemeral key is the public counterpart
-        // of the sender's blinding scalar (k*G) — the Electrum key server does
-        // not report it, so this is the only way to get at it on that backend.
-        ephemeralKeyHex = data.subarray(offset + 2 * 48, offset + 3 * 48).toString('hex');
-        offset += 3 * 48 + 2;
-      }
-
-      // Extract tokenId if present
-      if ((flags & HAS_TOKENID) !== 0n) {
-        tokenIdHex = data.subarray(offset, offset + TOKEN_ID_SIZE).toString('hex');
-      }
-
-      return { rangeProofHex, tokenIdHex, transparentValue, ephemeralKeyHex };
-    } catch (e) {
+      const output = parseOutputHex(outputHex);
+      return {
+        rangeProofHex: output.rangeProofHex,
+        tokenIdHex: output.tokenIdHex,
+        transparentValue: output.transparentValue,
+        ephemeralKeyHex: output.keys?.ephemeralKey ?? null,
+      };
+    } catch {
       return { rangeProofHex: null, tokenIdHex: null, transparentValue: null, ephemeralKeyHex: null };
     }
   }
