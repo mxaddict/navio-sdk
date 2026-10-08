@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## [Unreleased]
 
+### Security
+
+- **`WalletDB` balance and output queries bind the token id.**
+  `getBalance`, `getUnspentOutputs` and `getPendingSpentAmount` spliced the
+  `tokenId` argument into their SQL, so a token id containing a quote changed
+  the query: `getBalance("x' OR '1'='1")` returned the sum of every output,
+  spent or not. The token id is now a bound parameter. The IndexedDB adapter
+  filters in JavaScript and was not affected.
+
 ### Fixed
 
 - **`DeepReorgError.reason` is `too-deep` at the `blockHashRetention` limit.**

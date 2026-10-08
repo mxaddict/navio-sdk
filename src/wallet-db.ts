@@ -1432,10 +1432,11 @@ export class WalletDB {
     if (tokenId === null) {
       query += " AND (token_id IS NULL OR token_id = '0000000000000000000000000000000000000000000000000000000000000000')";
     } else {
-      query += ` AND token_id = '${tokenId}'`;
+      query += ' AND token_id = ?';
     }
 
     const stmt = await this.adapter.prepare(query);
+    if (tokenId !== null) stmt.bind([tokenId]);
     if (await stmt.step()) {
       const row = await stmt.getAsObject();
       await stmt.free();
@@ -1532,15 +1533,19 @@ export class WalletDB {
       query += " AND (token_id IS NULL OR token_id = '0000000000000000000000000000000000000000000000000000000000000000'"
         + " OR token_id = '0000000000000000000000000000000000000000000000000000000000000000ffffffffffffffff')";
     } else {
-      query += ` AND token_id = '${tokenId}'`;
+      query += ' AND token_id = ?';
     }
 
-    const result = await this.adapter.exec(query);
-    if (result.length === 0 || result[0].values.length === 0 || result[0].values[0][0] === null) {
+    const stmt = await this.adapter.prepare(query);
+    if (tokenId !== null) stmt.bind([tokenId]);
+    const found = await stmt.step();
+    const total = found ? (await stmt.getAsObject()).total : null;
+    await stmt.free();
+    if (total === null || total === undefined) {
       return 0n;
     }
 
-    return BigInt(result[0].values[0][0] as number);
+    return BigInt(total as number);
   }
 
   /**
@@ -1565,12 +1570,13 @@ export class WalletDB {
       // NAV - outputs with no token_id or default token_id
       query += " AND (token_id IS NULL OR token_id = '0000000000000000000000000000000000000000000000000000000000000000')";
     } else {
-      query += ` AND token_id = '${tokenId}'`;
+      query += ' AND token_id = ?';
     }
 
     query += ' ORDER BY block_height ASC';
 
     const stmt = await this.adapter.prepare(query);
+    if (tokenId !== null) stmt.bind([tokenId]);
 
     const outputs: WalletOutput[] = [];
     while (await stmt.step()) {
