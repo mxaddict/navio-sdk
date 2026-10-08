@@ -17,7 +17,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   Outputs created by navio-sdk 0.1.36 or earlier, or by any other wallet, used
   a random scalar that no longer exists anywhere; they cannot be recovered, and
   no future version can change that.
-
   - `client.recoverBlindingKey({ txid, vout })` returns the private scalar,
     its public counterpart, and whether it came from the wallet database or
     was re-derived from the seed.
@@ -26,12 +25,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
     sender's blinding scalar, and the key `signOutput`'s signatures verify
     against — so a verifier (the bridge watchtower, for one) can check a
     refund claim without any access to the sender's wallet. It is public data
-    and is persisted during sync on both backends. Note it is *not*
+    and is persisted during sync on both backends. Note it is _not_
     `WalletOutput.blindingKey`, which navio-core computes as
     `k * sk_destination`: that one is bound to the recipient's spend key and
     no signature made with `k` verifies against it.
   - `client.signOutput({ txid, vout, message })` returns `{ signature,
-    blindingKey }`, signing the message exactly as given so it verifies under
+blindingKey }`, signing the message exactly as given so it verifies under
     `Signature.verify(publicKey, message)` in navio-blsct.
   - The derivation is
     `sha256("navio-blsct-blinding/v1" ‖ seed ‖ anchor.outid ‖ counter)` reduced
@@ -44,7 +43,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
     the sender itself contributed, compared as 32 bytes in internal order —
     not `vin[0]`. navio-core shuffles `vin` before broadcast and block
     aggregation splices other senders' inputs into the transaction, so no
-    position survives; a canonical choice over the sender's own input *set*
+    position survives; a canonical choice over the sender's own input _set_
     does.
   - Recovery trusts neither the output's on-chain index nor any input
     position. Navio merges every non-coinbase transaction in a block into one,
@@ -99,7 +98,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   - `broadcastTransaction` never sent anything. It now pushes an unsolicited
     `tx` message and confirms the node holds the transaction in its mempool
     (via the output-hash lookup below); a rejected transaction throws.
-  - `getRawTransaction` waited for *any* `tx` message. Responses are now
+  - `getRawTransaction` waited for _any_ `tx` message. Responses are now
     matched by txid/wtxid (and `notfound` is honoured); confirmed
     transactions the node no longer serves over `getdata` are re-read from the
     block they were scanned in (`txLocationCacheSize`, default 100000 txids).
@@ -109,7 +108,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
     which cannot work on the wire: its name is 13 characters, one more than
     the 12-byte command field, so nodes receive `getoutputdat` and drop it as
     unknown. The node's output-hash lookup for `getdata(MSG_WITNESS_TX,
-    outputHash)` is used instead (mempool / most recent block); scanned
+outputHash)` is used instead (mempool / most recent block); scanned
     outputs are served from the local cache as before.
   - Transaction ids were the hash of the full serialization; they are now the
     witness-stripped hash (`CTransaction::ComputeHash`).
@@ -161,7 +160,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   the coins committed to live orders out of the next order's coin selection
   (`reserveInputs`, default true). The network's order cache refuses an order
   spending an input of a stored order — `order rejected (expired, duplicate,
-  or input conflict)` — and evicts an order only on expiry or when an input
+or input conflict)` — and evicts an order only on expiry or when an input
   is spent on chain, so re-publishing from the same coins could never work.
   A broadcast that times out keeps its reservation (the daemon may still have
   published the order after its proof-of-work grind) and says so in the
@@ -213,7 +212,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   activation height — or has not synced in this session — no longer emits
   v1 outputs the node rejects.
 - **`Cannot derive spending key: output … does not map to a known sub-address
-  in this wallet`** when spending:
+in this wallet`** when spending:
   - Sub-addresses generated past the default pools (fresh receive addresses
     handed out with `generateNewSubAddress`/`getNewDestination`) were never
     persisted, so after a reload outputs received on them were in the
@@ -250,6 +249,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.28] - 2026-07-27
 
 ### Added
+
 - `mintNfts()`: mint several NFTs from a collection in a SINGLE transaction
   (one broadcast, one fee, one block). Per-NFT metadata and optional per-NFT
   destination addresses; returns the full NFT token ids in input order.
@@ -258,6 +258,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   alongside the collection `metadata`/`totalSupply`.
 
 ### Fixed
+
 - Token-registry lookup failures were cached for the client's lifetime, so a
   single transient server error left assets without metadata for the rest of
   a long-lived session ("received NFT has no metadata"). Misses now expire
@@ -268,6 +269,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.27] - 2026-07-22
 
 ### Fixed
+
 - NAV balance no longer reads 0 while the wallet's own change is unconfirmed.
   Mempool processing stored the change output's token id as
   `TokenId.serialize()`'s NAV spelling (zero hash + `ffff…` no-subid marker),
@@ -280,8 +282,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.26] - 2026-07-22
 
 ### Fixed
+
 - Minting an NFT no longer kills the process. Mint outputs carry their amount
-  as a transparent value and an *empty* range proof, and
+  as a transparent value and an _empty_ range proof, and
   `RangeProof.recoverAmounts` on an empty proof terminates the process with an
   uncatchable native exception. The mempool-processing path that runs right
   after every own broadcast called it unconditionally, so any app died the
@@ -300,6 +303,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.25] - 2026-07-22
 
 ### Fixed
+
 - Sync no longer aborts permanently on outputs whose BLSCT keys are not
   valid curve points. Anyone can broadcast such an output (testnet block
   48020 contains one); the server serves its keys verbatim, and
@@ -312,6 +316,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.24] - 2026-07-22
 
 ### Added
+
 - `publicTokenId` on `CreateCollectionResult`, `MintAssetResult`, and
   `CreatedCollectionInfo`: the public on-chain token id (hash of the token
   public key, computed locally) — the id explorers, `gettoken`, and the
@@ -329,6 +334,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.23] - 2026-07-21
 
 ### Added
+
 - `listCreatedCollections()`: list the token/NFT collections this wallet
   created. Creations are recorded in the wallet database at broadcast time;
   for restored wallets the method additionally discovers collections from
@@ -347,6 +353,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.22] - 2026-07-21
 
 ### Added
+
 - `createTokenCollection` accepts `initialMint: { address, amount }` to mint the
   first supply of the new token in the **same transaction** as the collection
   creation (consensus executes output predicates in order, so the collection is
@@ -360,18 +367,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.21] - 2026-07-21
 
 ### Added
-- `mintToken`/`mintNft` accept the *public* on-chain token id (the hash shown
+
+- `mintToken`/`mintNft` accept the _public_ on-chain token id (the hash shown
   by explorers and `gettoken`) as `collectionTokenId`: when the connected
   Electrum server bridges `blockchain.token.get_token`, the SDK resolves it
   back to the creation id (`Hash(metadata‖totalSupply)`), re-derives the mint
   key, and verifies ownership. Minting into a collection created by a different
   wallet, or into the wrong collection type (fungible vs NFT), now fails with a
-  clear error *before* broadcasting.
+  clear error _before_ broadcasting.
 - `blockchain.token.get_token` bridge method on `ElectrumClient` (`getToken`).
 - Network `failed-to-execute-predicate` rejections from mints now carry an
   explanation of the likely causes.
 
 ### Fixed
+
 - Spends from a wallet database that was synced against a different network
   (e.g. testnet database used with a mainnet backend) were broadcast and
   rejected with an opaque `bad-txns-inputs-missingorspent`. Every spend now
@@ -382,6 +391,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   immediately instead of producing an invalid transaction.
 
 ### CI
+
 - Allow install scripts for `navio-blsct`, `better-sqlite3`, and `esbuild`
   under npm's install-script policy (`package.json#allowScripts`); without it
   the native BLSCT module is never built and the publish pipeline fails.
@@ -389,6 +399,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.20] - 2026-07-08
 
 ### Fixed
+
 - Token/NFT mint output amounts are recovered reliably during sync: NFT mint
   outputs store their amount as a transparent value (now read), and a `0` from
   the serialized fast-path parser is treated as inconclusive and confirmed via
@@ -397,6 +408,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## [0.1.19] - 2026-07-07
 
 ### Added
+
 - RFQ / atomic-swap trading for light wallets (taker and maker) over the
   ElectrumX p2pmsg bridge: `requestQuote`, `listQuotes`, `acceptQuote`,
   `broadcastSwapIntent`, `replyQuote`, and friends.
