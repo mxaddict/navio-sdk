@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ### Fixed
 
+- **Blocks replaced by a reorg are now re-scanned.** `sync()` chose its start
+  height before checking for a reorg, so after reverting to the fork it
+  carried on from the old height: outputs and spends in the replacement blocks
+  were never recorded. The reorg check now runs first, the start height comes
+  from the reverted state (an explicit `startHeight` past the fork is pulled
+  back to it), and the check also runs when the tip height has not moved, so a
+  reorg that only replaces the tip block is caught. `isSyncNeeded()` reports
+  such a replaced tip by comparing the provider's tip hash with the stored
+  one. `onProgress` now receives `isReorg = true` once after a revert; it was
+  always `false`.
 - **A reorg revert is now atomic.** Reverting orphaned blocks deleted their
   rows height by height and only then saved the new sync state, so a crash
   part-way could delete the stored hash of the last synced block and the reorg

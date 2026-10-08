@@ -254,15 +254,28 @@ export class TransactionKeysSync {
   }
 
   /**
-   * Check if sync is needed
+   * Check if sync is needed: the chain tip is past the last synced height, or
+   * the block the wallet holds at the tip height is not the tip block (a
+   * reorg replaced it). Without a hash to compare on either side (a provider
+   * that does not report the tip hash, or an old sync state) only the heights
+   * are compared.
    */
   async isSyncNeeded(): Promise<boolean> {
     if (!this.syncState) {
       return true;
     }
 
-    const chainTip = await this.syncProvider.getChainTipHeight();
-    return chainTip > this.syncState.lastSyncedHeight;
+    const tip = await this.syncProvider.getChainTip();
+    const { lastSyncedHeight, lastSyncedHash } = this.syncState;
+    if (tip.height > lastSyncedHeight) {
+      return true;
+    }
+
+    const heldHash =
+      tip.height === lastSyncedHeight && lastSyncedHash
+        ? lastSyncedHash
+        : await this.getStoredBlockHash(tip.height);
+    return Boolean(tip.hash && heldHash && tip.hash.toLowerCase() !== heldHash.toLowerCase());
   }
 
   /**
@@ -289,7 +302,32 @@ export class TransactionKeysSync {
     // Update retention setting
     this.blockHashRetention = blockHashRetention;
 
-    // Determine start and end heights
+    const chainTip = await this.syncProvider.getChainTipHeight();
+    const syncEndHeight = endHeight ?? chainTip;
+
+    // Check for a reorganization before choosing where to start: a revert
+    // moves lastSyncedHeight back to the fork, and the replacement blocks from
+    // there on must be scanned. This also runs when the tip did not advance,
+    // since a reorg can replace the tip block at the same height.
+    let reorgInfo: ReorganizationInfo | null = null;
+    if (this.syncState && verifyHashes && this.syncState.lastSyncedHeight <= chainTip) {
+      reorgInfo = await this.checkReorganization(this.syncState.lastSyncedHeight);
+      if (reorgInfo) {
+        if (stopOnReorg) {
+          throw new Error(
+            `Chain reorganization detected at height ${reorgInfo.height}. ` +
+              `Old hash: ${reorgInfo.oldHash}, New hash: ${reorgInfo.newHash}. ` +
+              `Need to revert ${reorgInfo.blocksToRevert} blocks.`
+          );
+        }
+        await this.handleReorganization(reorgInfo, chainTip);
+        if (onProgress) {
+          onProgress(reorgInfo.height - 1, syncEndHeight, 0, 0, true);
+        }
+      }
+    }
+
+    // Determine the start height (after any revert above)
     const lastSynced = this.syncState?.lastSyncedHeight ?? -1;
 
     // For first sync, use wallet creation height if available
@@ -301,29 +339,14 @@ export class TransactionKeysSync {
       }
     }
 
-    const syncStartHeight = startHeight ?? defaultStartHeight;
-    const chainTip = await this.syncProvider.getChainTipHeight();
-    const syncEndHeight = endHeight ?? chainTip;
+    let syncStartHeight = startHeight ?? defaultStartHeight;
+    if (reorgInfo && syncStartHeight > reorgInfo.height) {
+      // An explicit start past the fork would skip the replacement blocks.
+      syncStartHeight = reorgInfo.height;
+    }
 
     if (syncStartHeight > syncEndHeight) {
       return 0; // Already synced
-    }
-
-    // Check for reorganization
-    if (this.syncState && verifyHashes) {
-      const reorgInfo = await this.checkReorganization(this.syncState.lastSyncedHeight);
-      if (reorgInfo) {
-        if (stopOnReorg) {
-          throw new Error(
-            `Chain reorganization detected at height ${reorgInfo.height}. ` +
-              `Old hash: ${reorgInfo.oldHash}, New hash: ${reorgInfo.newHash}. ` +
-              `Need to revert ${reorgInfo.blocksToRevert} blocks.`
-          );
-        } else {
-          // Handle reorganization
-          await this.handleReorganization(reorgInfo);
-        }
-      }
     }
 
     let totalTxKeysSynced = 0;
@@ -419,32 +442,9 @@ export class TransactionKeysSync {
           isPoS = (blockVersion & 0x01000000) !== 0;
         }
 
-        if (verifyHashes) {
-          await this.storeBlockHash(block.height, blockHash, chainTip);
-
-          if (this.syncState && block.height <= this.syncState.lastSyncedHeight) {
-            const storedHash = await this.getStoredBlockHash(block.height);
-            if (storedHash && storedHash !== blockHash) {
-              const reorgInfo: ReorganizationInfo = {
-                height: block.height,
-                oldHash: storedHash,
-                newHash: blockHash,
-                blocksToRevert: this.syncState.lastSyncedHeight - block.height + 1,
-              };
-
-              if (stopOnReorg) {
-                throw new Error(
-                  `Chain reorganization detected at height ${block.height}. ` +
-                    `Old hash: ${storedHash}, New hash: ${blockHash}.`
-                );
-              } else {
-                await this.handleReorganization(reorgInfo);
-              }
-            }
-          }
-        } else {
-          await this.storeBlockHash(block.height, blockHash, chainTip);
-        }
+        // Reorgs are caught by the check before this loop: once the block at
+        // lastSyncedHeight matches the server, every block below it does too.
+        await this.storeBlockHash(block.height, blockHash, chainTip);
 
         const txKeysCount = await this.storeBlockTransactionKeys(block, blockHash, keepTxKeys, blockTimestamp, isPoS);
 
@@ -572,14 +572,14 @@ export class TransactionKeysSync {
    * Handle chain reorganization
    * @param reorgInfo - Reorganization information
    */
-  private async handleReorganization(reorgInfo: ReorganizationInfo): Promise<void> {
+  private async handleReorganization(reorgInfo: ReorganizationInfo, chainTip: number): Promise<void> {
     const forkParent = reorgInfo.height - 1;
     const newState: SyncState = {
       lastSyncedHeight: forkParent,
       lastSyncedHash: (await this.getStoredBlockHash(forkParent)) || '',
       totalTxKeysSynced: this.syncState?.totalTxKeysSynced ?? 0,
       lastSyncTime: Date.now(),
-      chainTipAtLastSync: await this.syncProvider.getChainTipHeight(),
+      chainTipAtLastSync: chainTip,
     };
 
     // The new state and the deletes land in one transaction, so a crash
