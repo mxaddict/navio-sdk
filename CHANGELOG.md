@@ -3,7 +3,7 @@
 All notable changes to navio-sdk are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-10-08
 
 ### Changed
 
@@ -49,6 +49,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   hash at or above the fork in one transaction, on both `WalletDB` and
   `IndexedDBWalletDB`. Mempool rows are left alone. Custom `IWalletDB`
   implementations must add the method.
+- **Electrum sync no longer skips blocks after a size-limited page.**
+  `get_range_txs_keys` blocks are positional, but the SDK resumed from the
+  server's `next_height`, which electrumx could advance past blocks it dropped
+  from a size-limited response, silently skipping up to ~100 blocks and any
+  wallet outputs in them. Sync now resumes at `start + blocks.length` and
+  ignores a `next_height` beyond what was returned.
 
 ## [0.2.0] - 2026-09-21
 
