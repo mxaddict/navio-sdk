@@ -407,17 +407,27 @@ export class WalletDB {
     } catch {
       // Column already exists – ignore
     }
-    let addedStakedCommitmentColumn = false;
+    // The column and its backfill commit together. Otherwise a crash between
+    // them leaves the column in place, so the backfill never runs again and
+    // old staked outputs stay spendable.
+    await this.adapter.run('BEGIN TRANSACTION');
     try {
-      await this.adapter.run(
-        `ALTER TABLE wallet_outputs ADD COLUMN is_staked_commitment INTEGER NOT NULL DEFAULT 0`
-      );
-      addedStakedCommitmentColumn = true;
-    } catch {
-      // Column already exists – ignore
-    }
-    if (addedStakedCommitmentColumn) {
-      await this.backfillStakedCommitments();
+      let addedStakedCommitmentColumn = false;
+      try {
+        await this.adapter.run(
+          `ALTER TABLE wallet_outputs ADD COLUMN is_staked_commitment INTEGER NOT NULL DEFAULT 0`
+        );
+        addedStakedCommitmentColumn = true;
+      } catch {
+        // Column already exists – ignore
+      }
+      if (addedStakedCommitmentColumn) {
+        await this.backfillStakedCommitments();
+      }
+      await this.adapter.run('COMMIT');
+    } catch (error) {
+      await this.adapter.run('ROLLBACK');
+      throw error;
     }
 
     // Create indexes for wallet_outputs

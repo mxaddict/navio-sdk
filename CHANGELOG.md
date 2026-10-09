@@ -12,8 +12,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   `OP_STAKED_COMMITMENT` script during sync and on mempool transactions.
   `getStakedOutputs()` and `getStakedBalance()` report them. Outputs stored by
   an earlier version are flagged from their stored serialized output when the
-  database is opened: SQLite gains an `is_staked_commitment` column, and the
-  IndexedDB database moves to version 5.
+  database is opened: SQLite gains an `is_staked_commitment` column, added
+  and backfilled in one transaction so an interrupted upgrade is retried, and
+  the IndexedDB database moves to version 5.
 
 ### Changed
 
