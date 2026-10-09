@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -92,13 +92,12 @@ describe('WalletDB staked-commitment migration', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('flags staked outputs stored before the column existed', async () => {
+  /** A wallet database as released before is_staked_commitment. */
+  function writeOldDatabase(path: string) {
     const outputs = parseTransaction(Buffer.from(STAKED_TX_HEX, 'hex')).outputs;
     const staked = outputs.find(isStakedCommitmentOutput)!;
     const other = outputs.find(o => !isStakedCommitmentOutput(o))!;
 
-    // A wallet_outputs table as released before is_staked_commitment.
-    const path = join(dir, 'wallet.db');
     const old = new Database(path);
     old.exec(`CREATE TABLE wallet_outputs (
       output_hash TEXT PRIMARY KEY, tx_hash TEXT NOT NULL, output_index INTEGER NOT NULL,
@@ -116,18 +115,49 @@ describe('WalletDB staked-commitment migration', () => {
     insert.run('06'.repeat(32), 'dd'.repeat(32), '', 10);
     old.close();
 
+    return { staked, other };
+  }
+
+  async function stakedFlags(walletDB: WalletDB): Promise<Record<string, boolean>> {
+    return Object.fromEntries(
+      (await walletDB.getAllOutputs()).map(o => [o.outputHash, o.isStakedCommitment])
+    );
+  }
+
+  it('flags staked outputs stored before the column existed', async () => {
+    const path = join(dir, 'wallet.db');
+    const { staked, other } = writeOldDatabase(path);
+
     const walletDB = new WalletDB({ type: 'better-sqlite3' });
     await walletDB.open(path);
     try {
-      const flags = Object.fromEntries(
-        (await walletDB.getAllOutputs()).map(o => [o.outputHash, o.isStakedCommitment])
-      );
-      expect(flags).toEqual({
+      expect(await stakedFlags(walletDB)).toEqual({
         [staked.outputHash]: true,
         [other.outputHash]: false,
         ['06'.repeat(32)]: false,
       });
       expect(await walletDB.getBalance()).toBe(110n);
+    } finally {
+      await walletDB.close();
+    }
+  });
+
+  it('retries the backfill when the migration was interrupted', async () => {
+    const path = join(dir, 'wallet.db');
+    const { staked } = writeOldDatabase(path);
+
+    const backfill = vi
+      .spyOn(WalletDB.prototype as any, 'backfillStakedCommitments')
+      .mockRejectedValueOnce(new Error('interrupted'));
+    const interrupted = new WalletDB({ type: 'better-sqlite3' });
+    await expect(interrupted.open(path)).rejects.toThrow('interrupted');
+    await interrupted.close();
+    backfill.mockRestore();
+
+    const walletDB = new WalletDB({ type: 'better-sqlite3' });
+    await walletDB.open(path);
+    try {
+      expect((await stakedFlags(walletDB))[staked.outputHash]).toBe(true);
     } finally {
       await walletDB.close();
     }
