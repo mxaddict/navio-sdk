@@ -69,6 +69,20 @@ export interface ParsedOutput {
   outputHash: string;
   /** Serialized output (hex) */
   serializedHex: string;
+  /**
+   * The output's value when it is transparent: `nValue` itself for a plain
+   * output, or the transparent value a flagged output carries (token and NFT
+   * mints). Null when the value is hidden in the range proof.
+   */
+  transparentValue: bigint | null;
+  /** The whole scriptPubKey (hex) */
+  scriptPubKeyHex: string;
+  /** The serialized range proof (hex) when the output carries BLSCT data */
+  rangeProofHex: string | null;
+  /** The 40-byte token id (hex) when the output carries one */
+  tokenIdHex: string | null;
+  /** The serialized vector predicate (hex) when the output carries one */
+  predicateHex: string | null;
   /** BLSCT keys when the output carries BLSCT data */
   keys: ParsedOutputKeys | null;
 }
@@ -258,21 +272,27 @@ function skipProofOfStake(c: Cursor): void {
 function parseOutput(c: Cursor, index: number): ParsedOutput {
   const start = c.offset;
   let flags = 0n;
+  let transparentValue: bigint | null = null;
   const rawValue = c.i64();
   if (rawValue === MAX_AMOUNT) {
     flags = c.u64();
     if (flags & OUT_TRANSPARENT_VALUE_MARKER) {
-      c.skip(8);
+      transparentValue = c.i64();
     }
+  } else {
+    transparentValue = rawValue;
   }
 
   // scriptPubKey
   const scriptLen = c.varint();
-  c.skip(scriptLen);
+  const scriptPubKeyHex = c.bytes(scriptLen).toString('hex');
 
   let keys: ParsedOutputKeys | null = null;
+  let rangeProofHex: string | null = null;
   if (flags & OUT_BLSCT_MARKER) {
+    const rangeProofStart = c.offset;
     const hasRangeProof = skipRangeProof(c);
+    rangeProofHex = c.data.subarray(rangeProofStart, c.offset).toString('hex');
     const spendingKey = c.bytes(G1_POINT_SIZE).toString('hex');
     const blindingKey = c.bytes(G1_POINT_SIZE).toString('hex');
     const ephemeralKey = c.bytes(G1_POINT_SIZE).toString('hex');
@@ -280,13 +300,15 @@ function parseOutput(c: Cursor, index: number): ParsedOutput {
     keys = { outputHash: '', blindingKey, spendingKey, ephemeralKey, viewTag, hasRangeProof };
   }
 
+  let tokenIdHex: string | null = null;
   if (flags & OUT_TOKEN_MARKER) {
-    c.skip(TOKEN_ID_SIZE);
+    tokenIdHex = c.bytes(TOKEN_ID_SIZE).toString('hex');
   }
 
+  let predicateHex: string | null = null;
   if (flags & OUT_PREDICATE_MARKER) {
     const predicateLen = c.varint();
-    c.skip(predicateLen);
+    predicateHex = c.bytes(predicateLen).toString('hex');
   }
 
   const serialized = c.data.subarray(start, c.offset);
@@ -294,7 +316,32 @@ function parseOutput(c: Cursor, index: number): ParsedOutput {
   if (keys) {
     keys.outputHash = outputHash;
   }
-  return { index, outputHash, serializedHex: serialized.toString('hex'), keys };
+  return {
+    index,
+    outputHash,
+    serializedHex: serialized.toString('hex'),
+    transparentValue,
+    scriptPubKeyHex,
+    rangeProofHex,
+    tokenIdHex,
+    predicateHex,
+    keys,
+  };
+}
+
+/**
+ * Parse one serialized `CTxOut` (as `CTxOut::Serialize` writes it, e.g. the
+ * output a backend returns by output hash). Throws on truncated data or
+ * trailing bytes.
+ */
+export function parseOutputHex(hex: string): ParsedOutput {
+  const data = Buffer.from(hex, 'hex');
+  const c = new Cursor(data, 0);
+  const output = parseOutput(c, 0);
+  if (c.offset !== data.length) {
+    throw new Error(`Trailing data after output: ${data.length - c.offset} bytes`);
+  }
+  return output;
 }
 
 /**
