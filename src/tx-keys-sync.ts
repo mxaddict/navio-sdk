@@ -156,8 +156,8 @@ export class ReorgError extends Error {
  *
  * Navio's PoS chain normally reorganizes by one or two blocks; 100 leaves a
  * wide margin while keeping the search to a single header request of at most
- * 100 headers. It is further capped by `blockHashRetention`, since the hashes
- * to compare against are pruned below it. A deeper reorg throws
+ * 100 headers. It is further capped at `blockHashRetention - 1`, since the
+ * hashes to compare against are pruned below it. A deeper reorg throws
  * {@link DeepReorgError} rather than walking back towards genesis.
  */
 export const MAX_REORG_DEPTH = 100;
@@ -631,9 +631,11 @@ export class TransactionKeysSync {
       return null;
     }
 
+    // Retention keeps the newest `blockHashRetention` hashes, so the deepest
+    // height that can still match is `blockHashRetention - 1` below the tip.
     const maxDepth =
       this.blockHashRetention > 0
-        ? Math.min(MAX_REORG_DEPTH, this.blockHashRetention)
+        ? Math.min(MAX_REORG_DEPTH, this.blockHashRetention - 1)
         : MAX_REORG_DEPTH;
     const lowest = Math.max(0, lastSynced - maxDepth);
     const headers =
