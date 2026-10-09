@@ -19,7 +19,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 - **`getBalance()` and `getUnspentOutputs()` leave staked commitments out**
   (the client methods and the `IWalletDB` implementations alike), and coin
-  selection no longer picks them. They were counted as spendable NAV before.
+  selection no longer picks them, for sends, token fees, RFQ swaps and
+  standing orders alike. They were counted as spendable NAV before.
   An input spending one is built with the staked-commitment flag set, as
   navio-core's wallet records it.
 

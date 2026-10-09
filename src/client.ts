@@ -3842,7 +3842,11 @@ export class NavioClient {
     // token branch). NAV outputs are stored with tokenId === null.
     const exclude = params.excludeUtxos ?? new Set<string>();
     const spendable = (utxo: WalletOutput, publicId: string | null): boolean =>
-      !utxo.isSpent && utxo.blockHeight > 0 && utxo.tokenId === publicId && !exclude.has(utxo.outputHash);
+      !utxo.isSpent &&
+      !utxo.isStakedCommitment &&
+      utxo.blockHeight > 0 &&
+      utxo.tokenId === publicId &&
+      !exclude.has(utxo.outputHash);
     const payUtxos = allOutputs.filter((utxo) => spendable(utxo, pay.publicId));
     const navUtxos = pay.publicId === null
       ? payUtxos
