@@ -804,8 +804,10 @@ export class TransactionKeysSync {
     let parsedOutputs: ParsedOutput[] = [];
     try {
       parsedOutputs = parseTransaction(Buffer.from(rawTx, 'hex')).outputs;
-    } catch {
-      // Unparseable here: the outputs are stored as not staked.
+    } catch (error) {
+      // The outputs are stored as not staked until block sync rewrites them,
+      // so a staked one counts in the balance meanwhile.
+      console.warn(`Could not parse mempool transaction ${txHash} to find staked outputs:`, error);
     }
 
     for (let i = 0; i < numOuts; i++) {
