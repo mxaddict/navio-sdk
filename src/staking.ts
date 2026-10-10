@@ -2,7 +2,29 @@
  * Staking helpers that need no chain access.
  */
 
+import {
+  BlsctPredicateType,
+  getPredicateType,
+  isStakeDelegationDataHex,
+  parseDataPredicateData,
+  parseStakeDelegationOwnerInfo,
+  type Point,
+} from '@nav-io/navio-blsct';
 import { parseOutputHex, type ParsedOutput } from './p2p-block-parser';
+
+/** A staked commitment of this wallet delegated to a third-party staker. */
+export interface StakeDelegation {
+  /** The delegated staked output */
+  outputHash: string;
+  /** The staked amount in satoshis */
+  amount: bigint;
+  /** Height of the block that confirmed the output */
+  blockHeight: number;
+  /** The staker's delegation public key (G1 point, hex) */
+  delegateKey: string;
+  /** Where the staker is asked to pay block rewards */
+  rewardAddress: string;
+}
 
 const OP_STAKED_COMMITMENT = 0xb9;
 const OP_PUSHDATA2 = 0x4d;
@@ -43,4 +65,35 @@ export function isStakedCommitmentOutputHex(outputHex: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The delegation a staked output carries, as its owner reads it, or null when
+ * the output carries no delegation payload. Mirrors navio-core's
+ * `GetWalletDelegations`: the payload is the output's DATA predicate, and its
+ * owner section opens with the output's BLSCT nonce.
+ *
+ * @param output - The staked output
+ * @param nonce - The output's nonce: its blinding key times the owner's view
+ *   key (`KeyManager.calculateNonce`)
+ * @throws When the output carries a delegation payload that the nonce does not
+ *   open
+ */
+export function recoverStakeDelegation(
+  output: ParsedOutput,
+  nonce: Point
+): { delegateKey: string; rewardAddress: string } | null {
+  const predicateHex = output.predicateHex;
+  if (
+    predicateHex === null ||
+    getPredicateType(predicateHex) !== BlsctPredicateType.BlsctDataPredicateType
+  ) {
+    return null;
+  }
+  const dataHex = parseDataPredicateData(predicateHex);
+  if (!isStakeDelegationDataHex(dataHex)) {
+    return null;
+  }
+  const { delegateKey, rewardAddress } = parseStakeDelegationOwnerInfo(dataHex, nonce);
+  return { delegateKey: delegateKey.serialize(), rewardAddress };
 }

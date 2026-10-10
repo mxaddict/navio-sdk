@@ -15,6 +15,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   database is opened: SQLite gains an `is_staked_commitment` column, added
   and backfilled in one transaction so an interrupted upgrade is retried, and
   the IndexedDB database moves to version 5.
+- **Stake delegations are listed.** `getStakeDelegations()` returns the
+  wallet's unspent staked commitments delegated to a third-party staker (cold
+  staking), each with the staker's delegation key and the reward address,
+  decrypted from the output's delegation payload with the wallet's view key.
+  Like navio-core's `listdelegations` it reads only the outputs sync stored,
+  so it works after a restore from seed; a delegation shows once its output
+  confirms. `IWalletDB` gains `getOutputData(outputHash)`, which other
+  implementations of the interface must add.
 
 ### Changed
 

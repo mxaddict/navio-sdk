@@ -1371,6 +1371,21 @@ export class WalletDB {
     return value;
   }
 
+  async getOutputData(outputHash: string): Promise<string | null> {
+    if (!this.adapter) throw new Error('Database not open');
+    const stmt = await this.adapter.prepare(
+      'SELECT output_data FROM wallet_outputs WHERE output_hash = ?'
+    );
+    stmt.bind([outputHash]);
+    let value: string | null = null;
+    if (await stmt.step()) {
+      const row = await stmt.getAsObject();
+      value = (row.output_data as string) || null;
+    }
+    await stmt.free();
+    return value;
+  }
+
   async storeWalletOutput(p: StoreOutputParams): Promise<void> {
     if (!this.adapter) throw new Error('Database not open');
     const stmt = await this.adapter.prepare(
