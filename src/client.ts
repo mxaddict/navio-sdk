@@ -20,7 +20,8 @@ import { SyncProvider } from './sync-provider';
 import { P2PSyncProvider } from './p2p-sync';
 import { P2PConnectionOptions } from './p2p-protocol';
 import { ElectrumSyncProvider } from './electrum-sync';
-import { parseTransaction } from './p2p-block-parser';
+import { parseOutputHex, parseTransaction } from './p2p-block-parser';
+import { recoverStakeDelegation, type StakeDelegation } from './staking';
 import {
   BlindingKeyAllocator,
   blindingPublicKeyHex,
@@ -1978,6 +1979,52 @@ export class NavioClient {
    */
   async getStakedBalance(): Promise<bigint> {
     return (await this.getStakedOutputs()).reduce((total, output) => total + output.amount, 0n);
+  }
+
+  /**
+   * Get the wallet's stake delegations: the unspent staked commitments it has
+   * delegated to a third-party staker, each with the staker's key and reward
+   * address read back from the output. Like navio-core's `listdelegations`,
+   * this works from the outputs sync already stored, so it needs no state of
+   * its own and survives a restore from seed. An output is listed once it
+   * confirms; mempool outputs and outputs whose serialized form the sync
+   * backend did not supply are not.
+   */
+  async getStakeDelegations(): Promise<StakeDelegation[]> {
+    const walletDB = this.walletDB;
+    if (!walletDB) {
+      throw new Error('Client not initialized');
+    }
+    if (!this.keyManager) {
+      throw new Error('KeyManager not available');
+    }
+    const delegations: StakeDelegation[] = [];
+    for (const output of await this.getStakedOutputs()) {
+      const outputData = await walletDB.getOutputData(output.outputHash);
+      if (outputData === null) {
+        continue;
+      }
+      try {
+        const delegation = recoverStakeDelegation(
+          parseOutputHex(outputData),
+          this.keyManager.calculateNonce(PublicKey.deserialize(output.blindingKey))
+        );
+        if (delegation) {
+          delegations.push({
+            outputHash: output.outputHash,
+            amount: output.amount,
+            blockHeight: output.blockHeight,
+            ...delegation,
+          });
+        }
+      } catch (error) {
+        console.warn(
+          `[NavioClient] Could not read the stake delegation of output ${output.outputHash.slice(0, 16)}…:`,
+          error
+        );
+      }
+    }
+    return delegations;
   }
 
   /**

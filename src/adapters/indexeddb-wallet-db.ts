@@ -758,6 +758,11 @@ export class IndexedDBWalletDB implements IWalletDB {
     return rec != null && rec.isSpent === 0;
   }
 
+  async getOutputData(outputHash: string): Promise<string | null> {
+    const rec = await this.get<any>('walletOutputs', outputHash);
+    return rec?.outputData || null;
+  }
+
   async isOutputSpentInMempool(outputHash: string): Promise<boolean> {
     const rec = await this.get<any>('walletOutputs', outputHash);
     return rec != null && rec.isSpent === 1 && rec.spentBlockHeight === 0;
