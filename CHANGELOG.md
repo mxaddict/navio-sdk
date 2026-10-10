@@ -32,6 +32,13 @@ delegateKey, rewardAddress? })` stakes NAV to the wallet's staking address
   `getMinStakeAmount()` reports the chain's minimum stake, and the
   `minStakeAmount` config option sets it for a chain whose minimum differs
   from the network default (navio-core's blsctregtest).
+- **Stake can be unstaked.** `unstake({ stakedOutputs?, amount? })` spends
+  staked commitments back into spendable NAV, which also revokes their
+  delegation, as navio-core's `stakeunlock` does. The unlocked NAV, less the
+  fee, returns to the wallet's staking address. A partial unstake stakes the
+  rest again and, unlike `stakeunlock`, keeps the delegation the spent
+  commitments share; it refuses commitments delegated differently, or whose
+  delegation the wallet cannot read.
 
 ### Changed
 

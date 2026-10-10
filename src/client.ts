@@ -272,6 +272,25 @@ export interface DelegateStakeOptions {
 }
 
 /**
+ * Options for unstaking: spending staked commitments back into spendable NAV.
+ */
+export interface UnstakeOptions {
+  /**
+   * The staked commitments to spend, by outputHash. Defaults to every
+   * confirmed staked commitment of the wallet.
+   */
+  stakedOutputs?: string[];
+  /**
+   * NAV to unlock in satoshis, the fee included. Defaults to the whole of the
+   * spent commitments. The rest is staked again, under the same delegation,
+   * and must reach the minimum stake.
+   */
+  amount?: bigint;
+  /** See {@link SendTransactionOptions.randomBlindingKeys}. */
+  randomBlindingKeys?: boolean;
+}
+
+/**
  * Options for sending a fungible token.
  */
 export interface SendTokenOptions extends Omit<SendTransactionOptions, 'tokenId'> {
@@ -2158,6 +2177,157 @@ export class NavioClient {
       randomBlindingKeys,
       amount
     );
+  }
+
+  /**
+   * Unstake: spend staked commitments back into spendable NAV, as navio-core's
+   * `stakeunlock` does. This also revokes their delegation: the staker can no
+   * longer stake them. The unlocked NAV, less the fee, goes to the wallet's
+   * staking address as a normal output.
+   *
+   * A partial unstake stakes the rest again. Unlike `stakeunlock`, which
+   * leaves that remainder undelegated, it keeps the delegation the spent
+   * commitments share; it refuses commitments delegated differently, or
+   * whose delegation the wallet cannot read, rather than choose for them.
+   *
+   * @param options - Which commitments to spend and how much to unlock
+   * @returns Transaction result with txId and details
+   */
+  async unstake(options: UnstakeOptions = {}): Promise<SendTransactionResult> {
+    const { walletDB } = await this.ensureSpendReady();
+
+    const confirmed = (await this.getStakedOutputs()).filter(output => output.blockHeight > 0);
+    let spent: WalletOutput[];
+    if (options.stakedOutputs === undefined) {
+      if (confirmed.length === 0) {
+        throw new Error('No confirmed staked outputs to unstake');
+      }
+      spent = confirmed;
+    } else {
+      if (options.stakedOutputs.length === 0) {
+        throw new Error('stakedOutputs must not be empty');
+      }
+      if (new Set(options.stakedOutputs).size !== options.stakedOutputs.length) {
+        throw new Error('stakedOutputs lists an output more than once');
+      }
+      const byHash = new Map(confirmed.map(output => [output.outputHash, output]));
+      spent = options.stakedOutputs.map(hash => {
+        const output = byHash.get(hash);
+        if (!output) {
+          throw new Error(
+            `Not a confirmed, unspent staked output of this wallet: ${hash.slice(0, 16)}...`
+          );
+        }
+        return output;
+      });
+    }
+
+    const total = spent.reduce((sum, output) => sum + output.amount, 0n);
+    const amount = options.amount ?? total;
+    if (amount <= 0n || amount > total) {
+      throw new Error(
+        `amount must be positive and at most the ${total} sat staked in the spent outputs, got ${amount}`
+      );
+    }
+    const restake = total - amount;
+    const minStake = this.getMinStakeAmount();
+    if (restake > 0n && restake < minStake) {
+      throw new Error(
+        `Unstaking ${amount} sat would leave ${restake} sat staked, below the minimum stake of ${minStake} sat`
+      );
+    }
+    const delegation = restake > 0n ? await this.sharedStakeDelegation(spent) : null;
+
+    const inputs = spent.map(output => ({ output, tokenId: TokenId.default() }));
+    const blindingKeys = this.makeBlindingKeyAllocator(inputs, options.randomBlindingKeys);
+    const stakeAddress = this.getStakeSubAddress();
+    const buildOutputs = (fee: bigint): InstanceType<typeof UnsignedOutput>[] => {
+      if (amount <= fee) {
+        throw new Error(`Unlocking ${amount} sat does not cover the ${fee} sat fee`);
+      }
+      // Rebuilt once per fee round; restart the counters so each output's key
+      // follows its position rather than the number of rounds taken.
+      blindingKeys.reset();
+      const outputs = [
+        this.toUnsignedOutput(
+          TxOut.generate(
+            stakeAddress,
+            toSafeInteger(amount - fee, 'unlocked amount'),
+            'Stake Unlock',
+            TokenId.default(),
+            TxOutputType.Normal,
+            0,
+            false,
+            blindingKeys.next()
+          )
+        ),
+      ];
+      if (restake > 0n) {
+        const staked = this.toUnsignedOutput(
+          TxOut.generate(
+            stakeAddress,
+            toSafeInteger(restake, 'restaked amount'),
+            '',
+            TokenId.default(),
+            TxOutputType.StakedCommitment,
+            toSafeInteger(minStake, 'minimum stake'),
+            false,
+            blindingKeys.next()
+          )
+        );
+        if (delegation !== null) {
+          staked.setStakeDelegation(
+            stakeAddress,
+            Point.deserialize(delegation.delegateKey),
+            delegation.rewardAddress
+          );
+        }
+        outputs.push(staked);
+      }
+      return outputs;
+    };
+
+    // Fee fixpoint on the signed size, as in sendTransaction.
+    let fee = 0n;
+    let outputs = buildOutputs(fee);
+    for (let i = 0; i < 6; i++) {
+      const { rawTx } = this.signUnsignedTransaction(inputs, outputs, fee);
+      const required = requiredBlsctFee(rawTx.length / 2);
+      if (fee >= required) break;
+      fee = required;
+      outputs = buildOutputs(fee);
+    }
+
+    return this.signAndBroadcastUnsignedTransaction(walletDB, inputs, outputs, fee, blindingKeys);
+  }
+
+  /**
+   * The delegation every one of `outputs` carries, or null when none carries
+   * one. Throws when they differ, or when one's delegation cannot be read.
+   */
+  private async sharedStakeDelegation(
+    outputs: WalletOutput[]
+  ): Promise<{ delegateKey: string; rewardAddress: string } | null> {
+    const found = await Promise.all(outputs.map(output => this.readStakeDelegation(output)));
+    if (found.some(f => f.status === 'unknown')) {
+      throw new Error(
+        'Cannot read the delegation of every staked output being spent, so the stake left behind could not keep it. ' +
+          'Unstake those outputs in full.'
+      );
+    }
+    const identities = new Set(
+      found.map(f => (f.status === 'delegated' ? `${f.delegateKey}|${f.rewardAddress}` : 'none'))
+    );
+    if (identities.size > 1) {
+      throw new Error(
+        'The staked outputs being spent are delegated differently, so the stake left behind has no single delegation ' +
+          'to keep. Unstake them in full, or pick outputs that share one with stakedOutputs.'
+      );
+    }
+    const first = found[0];
+    return first.status === 'delegated'
+      ? { delegateKey: first.delegateKey, rewardAddress: first.rewardAddress }
+      : null;
   }
 
   /**
