@@ -99,7 +99,63 @@ function canConnect(port: number, timeoutMs = 500): Promise<boolean> {
 
 export const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+/** A JSON-RPC client for the node listening on `rpcPort`. */
+function rpcClient(rpcPort: number): RegtestNode['rpc'] {
+  const auth = 'Basic ' + Buffer.from(`${RPC_USER}:${RPC_PASS}`).toString('base64');
+  let rpcId = 0;
+  const rpc = async <T>(method: string, params: unknown[] = [], wallet?: string): Promise<T> => {
+    const url = `http://127.0.0.1:${rpcPort}/${wallet ? `wallet/${wallet}` : ''}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: auth },
+      body: JSON.stringify({ jsonrpc: '1.0', id: ++rpcId, method, params }),
+    });
+    const text = await res.text();
+    let body: { result?: T; error?: { code: number; message: string } | null };
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new Error(`rpc ${method}: HTTP ${res.status}: ${text.slice(0, 200)}`);
+    }
+    if (body.error) {
+      throw Object.assign(new Error(`rpc ${method}: ${body.error.message}`), {
+        code: body.error.code,
+      });
+    }
+    return body.result as T;
+  };
+  return rpc;
+}
+
+/**
+ * Attach to a blsctregtest node that is already running, rather than spawn
+ * one, when NAVIO_REGTEST_P2P_PORT and NAVIO_REGTEST_RPC_PORT are set: for a
+ * node the script cannot start itself, such as one in WSL or a container. It
+ * must be a fresh chain with RPC credentials user/pass, listening on
+ * 127.0.0.1. stop() leaves it running.
+ */
+function attachedNode(): RegtestNode | null {
+  const p2p = process.env.NAVIO_REGTEST_P2P_PORT;
+  const rpcPort = process.env.NAVIO_REGTEST_RPC_PORT;
+  if (p2p === undefined && rpcPort === undefined) return null;
+  if (p2p === undefined || rpcPort === undefined) {
+    throw new Error(
+      'Set both NAVIO_REGTEST_P2P_PORT and NAVIO_REGTEST_RPC_PORT to attach to a node'
+    );
+  }
+  return {
+    port: Number(p2p),
+    rpcPort: Number(rpcPort),
+    datadir: '',
+    rpc: rpcClient(Number(rpcPort)),
+    stop: async () => undefined,
+  };
+}
+
 export async function startRegtestNode(binary = DEFAULT_NAVIOD): Promise<RegtestNode> {
+  const attached = attachedNode();
+  if (attached) return attached;
+
   const port = await getFreePort();
   const rpcPort = await getFreePort();
   const datadir = mkdtempSync(join(tmpdir(), 'navio-sdk-regtest-'));
@@ -132,29 +188,7 @@ export async function startRegtestNode(binary = DEFAULT_NAVIOD): Promise<Regtest
     });
   });
 
-  const auth = 'Basic ' + Buffer.from(`${RPC_USER}:${RPC_PASS}`).toString('base64');
-  let rpcId = 0;
-  const rpc = async <T>(method: string, params: unknown[] = [], wallet?: string): Promise<T> => {
-    const url = `http://127.0.0.1:${rpcPort}/${wallet ? `wallet/${wallet}` : ''}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: auth },
-      body: JSON.stringify({ jsonrpc: '1.0', id: ++rpcId, method, params }),
-    });
-    const text = await res.text();
-    let body: { result?: T; error?: { code: number; message: string } | null };
-    try {
-      body = JSON.parse(text);
-    } catch {
-      throw new Error(`rpc ${method}: HTTP ${res.status}: ${text.slice(0, 200)}`);
-    }
-    if (body.error) {
-      throw Object.assign(new Error(`rpc ${method}: ${body.error.message}`), {
-        code: body.error.code,
-      });
-    }
-    return body.result as T;
-  };
+  const rpc = rpcClient(rpcPort);
 
   let stopped = false;
   const stop = async (keep = false) => {
