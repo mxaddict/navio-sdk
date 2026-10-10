@@ -4316,9 +4316,18 @@ export class NavioClient {
     return { collectionTokenId: creationTokenId, ...resolved };
   }
 
+  private static insufficientFundingError(totalIn: bigint, fundedAmount: bigint, fee: bigint): Error {
+    return new Error(
+      fundedAmount === 0n
+        ? `Insufficient funds: need ${fee} sat for fees but only have ${totalIn} sat`
+        : `Insufficient funds: need ${fundedAmount + fee} sat (${fundedAmount} + ${fee} fee) but only have ${totalIn} sat`
+    );
+  }
+
   private async selectFundingUtxos(
     walletDB: IWalletDB,
     selectedUtxos?: string[],
+    fundedAmount: bigint = 0n,
   ): Promise<{ selected: WalletOutput[]; totalIn: bigint; fee: bigint }> {
     const allUtxos = await walletDB.getUnspentOutputs(null);
     const confirmedUtxos = allUtxos.filter((utxo) => utxo.blockHeight > 0);
@@ -4346,12 +4355,12 @@ export class NavioClient {
         }
         throw new Error('No unspent NAV outputs available to fund the transaction.');
       }
-      ({ selected, totalIn } = NavioClient.selectInputs(this.selectableUtxos(confirmedUtxos), 0n, false));
+      ({ selected, totalIn } = NavioClient.selectInputs(this.selectableUtxos(confirmedUtxos), fundedAmount, false));
     }
 
     const fee = BigInt((selected.length + 2) * DEFAULT_FEE_PER_COMPONENT);
-    if (totalIn < fee) {
-      throw new Error(`Insufficient funds: need ${fee} sat for fees but only have ${totalIn} sat`);
+    if (totalIn < fundedAmount + fee) {
+      throw NavioClient.insufficientFundingError(totalIn, fundedAmount, fee);
     }
 
     return { selected, totalIn, fee };
@@ -4369,14 +4378,17 @@ export class NavioClient {
    * @param buildAssetOutputs - Produces the transaction's non-change outputs
    * @param selectedUtxos - Optional manual funding selection
    * @param useRandomBlindingKeys - Opt out of recoverable blinding keys
+   * @param fundedAmount - NAV the asset outputs carry, funded from the
+   *   selected inputs on top of the fee
    */
   private async buildAndBroadcastUnsignedTransaction(
     buildAssetOutputs: (blindingKeys: BlindingKeyAllocator) => InstanceType<typeof UnsignedOutput>[],
     selectedUtxos?: string[],
     useRandomBlindingKeys?: boolean,
+    fundedAmount: bigint = 0n,
   ): Promise<SendTransactionResult> {
     const { walletDB } = await this.ensureSpendReady();
-    const { selected, totalIn } = await this.selectFundingUtxos(walletDB, selectedUtxos);
+    const { selected, totalIn } = await this.selectFundingUtxos(walletDB, selectedUtxos, fundedAmount);
     const inputs = selected.map((utxo) => ({ output: utxo, tokenId: TokenId.default() }));
     const blindingKeys = this.makeBlindingKeyAllocator(inputs, useRandomBlindingKeys);
 
@@ -4410,11 +4422,11 @@ export class NavioClient {
     // the final fee.
     for (let i = 0; i < 3; i++) {
       fee = this.estimateSignedUnsignedTransactionFee(inputs, outputs);
-      if (totalIn < fee) {
-        throw new Error(`Insufficient funds: need ${fee} sat for fees but only have ${totalIn} sat`);
+      if (totalIn < fundedAmount + fee) {
+        throw NavioClient.insufficientFundingError(totalIn, fundedAmount, fee);
       }
 
-      const navChangeAmount = totalIn - fee;
+      const navChangeAmount = totalIn - fundedAmount - fee;
       const nextOutputs = buildAll(navChangeAmount);
 
       outputs = nextOutputs;
