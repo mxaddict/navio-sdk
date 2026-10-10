@@ -48,8 +48,8 @@ import type {
 } from './trading.types';
 
 const {
-  Scalar, PublicKey, SubAddr, Signature,
-  Address, TokenId, CTxId, OutPoint, TxIn, TxOut,
+  Scalar, PublicKey, Point, SubAddr, Signature,
+  Address, AddressEncoding, TokenId, CTxId, OutPoint, TxIn, TxOut,
   TxOutputType, PrivSpendingKey,
   CTx, UnsignedInput, UnsignedOutput, UnsignedTransaction,
   TokenInfo, TokenType,
@@ -109,6 +109,26 @@ const NETWORK_BLSCT_PROOF_V2_HEIGHT: Record<NetworkType, number> = {
   signet: 2147483647,  // dormant
   regtest: 0,
 };
+
+/** Satoshis per NAV (navio-core `COIN`). */
+const SATS_PER_NAV = 100_000_000n;
+
+/**
+ * Consensus minimum stake (`nPePoSMinStakeAmount`) per network, in satoshis,
+ * from navio-core chainparams. A staked output's range proof is built against
+ * this amount and the node verifies it against its own, so the two must match.
+ * Core's blsctregtest chain shares the regtest address prefix but uses a lower
+ * minimum; a client on it sets `minStakeAmount` in its config.
+ */
+const NETWORK_MIN_STAKE: Record<NetworkType, bigint> = {
+  mainnet: 10_000n * SATS_PER_NAV,
+  testnet: 10_000n * SATS_PER_NAV,
+  signet: 10_000n * SATS_PER_NAV,
+  regtest: 10_000n * SATS_PER_NAV,
+};
+
+/** The compressed encoding of the BLS12-381 G1 identity point (hex). */
+const G1_IDENTITY_HEX = 'c0' + '00'.repeat(47);
 
 /**
  * Extra fee a maker's swap half over-funds so the combined transaction (its
@@ -222,6 +242,32 @@ export interface SendToManyOptions {
    * the outputs of this transaction to be attributable to this seed; the
    * scalars are then discarded and those outputs can never be recovered.
    */
+  randomBlindingKeys?: boolean;
+}
+
+/**
+ * Options for delegating a stake to a third-party staker (cold staking).
+ */
+export interface DelegateStakeOptions {
+  /** Amount to stake in satoshis; at least {@link NavioClient.getMinStakeAmount} */
+  amount: bigint;
+  /**
+   * The staker's delegation public key: a 48-byte G1 point (hex), published
+   * by the staking operator.
+   */
+  delegateKey: string;
+  /**
+   * Address the staker is asked to pay block rewards to. Defaults to this
+   * wallet's primary receive address. Advisory only: the staker controls its
+   * own coinbase.
+   */
+  rewardAddress?: string;
+  /**
+   * Optional list of specific UTXOs to fund the stake and fee from.
+   * Each entry must be an outputHash of an unspent, confirmed output.
+   */
+  selectedUtxos?: string[];
+  /** See {@link SendTransactionOptions.randomBlindingKeys}. */
   randomBlindingKeys?: boolean;
 }
 
@@ -851,6 +897,13 @@ export interface NavioClientConfig {
    * Individual sends can override this with `randomBlindingKeys`.
    */
   deterministicBlindingKeys?: boolean;
+
+  /**
+   * The chain's minimum stake in satoshis, for a chain whose minimum differs
+   * from the network default (navio-core's blsctregtest, which uses the
+   * regtest address prefix). See {@link NavioClient.getMinStakeAmount}.
+   */
+  minStakeAmount?: bigint;
 
   /** Restore wallet from seed (hex string) */
   restoreFromSeed?: string;
@@ -2025,6 +2078,98 @@ export class NavioClient {
       }
     }
     return delegations;
+  }
+
+  /**
+   * The minimum stake in satoshis on this client's chain: `minStakeAmount`
+   * from the config, else the network's consensus minimum.
+   */
+  getMinStakeAmount(): bigint {
+    return this.config.minStakeAmount ?? NETWORK_MIN_STAKE[this.getNetwork()];
+  }
+
+  /**
+   * Stake NAV and delegate block production to a third-party staker (cold
+   * staking), as navio-core's `delegatestake` does. The new staked commitment
+   * goes to this wallet's staking address and carries an encrypted copy of
+   * its opening for the staker, who can then stake it but never spend it.
+   * The wallet keeps the spending keys and can unstake at any time.
+   *
+   * Unlike `delegatestake`, existing staked commitments are not folded into
+   * the new one: each call adds a separate commitment.
+   *
+   * @param options - Amount, staker key and reward address
+   * @returns Transaction result with txId and details
+   */
+  async delegateStake(options: DelegateStakeOptions): Promise<SendTransactionResult> {
+    const { keyManager } = await this.ensureSpendReady();
+    const { amount, selectedUtxos, randomBlindingKeys } = options;
+
+    const minStake = this.getMinStakeAmount();
+    if (amount < minStake) {
+      throw new Error(`A minimum of ${minStake} sat is required to stake, got ${amount} sat`);
+    }
+    const delegateKey = NavioClient.parseDelegateKey(options.delegateKey);
+    const rewardAddress =
+      options.rewardAddress === undefined
+        ? keyManager.getSubAddressBech32m({ account: 0, address: 0 }, this.getNetwork())
+        : this.canonicalRewardAddress(options.rewardAddress);
+    const stakeAddress = this.getStakeSubAddress();
+
+    return this.buildAndBroadcastUnsignedTransaction(
+      blindingKeys => {
+        const staked = this.toUnsignedOutput(
+          TxOut.generate(
+            stakeAddress,
+            toSafeInteger(amount, 'amount'),
+            '',
+            TokenId.default(),
+            TxOutputType.StakedCommitment,
+            toSafeInteger(minStake, 'minimum stake'),
+            false,
+            blindingKeys.next()
+          )
+        );
+        staked.setStakeDelegation(stakeAddress, delegateKey, rewardAddress);
+        return [staked];
+      },
+      selectedUtxos,
+      randomBlindingKeys,
+      amount
+    );
+  }
+
+  /**
+   * A staker's delegation key, refusing anything but a non-identity G1 point
+   * as navio-core's `delegatestake` does.
+   */
+  private static parseDelegateKey(hex: string): InstanceType<typeof Point> {
+    // Checked before the native decoder sees it; see resolveOutputSubAddress.
+    if (!/^[0-9a-fA-F]{96}$/.test(hex) || hex.toLowerCase() === G1_IDENTITY_HEX) {
+      throw new Error('delegateKey must be a non-identity G1 point (96 hex characters)');
+    }
+    try {
+      return Point.deserialize(hex);
+    } catch (err) {
+      throw new Error(`delegateKey is not a valid G1 point: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Validate a reward address and return its canonical encoding, refusing
+   * one whose keys include the identity point: the staker would then pay the
+   * reward into an output anyone can spend. Mirrors navio-core's
+   * `EnsureRewardAddress`, minus the transparent addresses it also allows.
+   */
+  private canonicalRewardAddress(address: string): string {
+    this.decodeDestinationAddress(address);
+    const keys = Address.decode(address);
+    const keysHex: string = keys.serialize().toLowerCase();
+    const half = keysHex.length / 2;
+    if (keysHex.slice(0, half) === G1_IDENTITY_HEX || keysHex.slice(half) === G1_IDENTITY_HEX) {
+      throw new Error(`Reward address "${address.slice(0, 12)}…" has null keys`);
+    }
+    return Address.encode(keys, AddressEncoding.Bech32M);
   }
 
   /**
@@ -4833,5 +4978,16 @@ export class NavioClient {
       throw new Error('KeyManager not available');
     }
     return this.keyManager.getSubAddress({ account: -1, address: 0 });
+  }
+
+  /**
+   * The SubAddr staked commitments go to: the staking account (-2), whose
+   * single address navio-core's wallet also stakes to.
+   */
+  private getStakeSubAddress(): InstanceType<typeof SubAddr> {
+    if (!this.keyManager) {
+      throw new Error('KeyManager not available');
+    }
+    return this.keyManager.getSubAddress({ account: -2, address: 0 });
   }
 }
