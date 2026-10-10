@@ -2044,30 +2044,20 @@ export class NavioClient {
    * backend did not supply are not.
    */
   async getStakeDelegations(): Promise<StakeDelegation[]> {
-    const walletDB = this.walletDB;
-    if (!walletDB) {
-      throw new Error('Client not initialized');
-    }
     if (!this.keyManager) {
       throw new Error('KeyManager not available');
     }
     const delegations: StakeDelegation[] = [];
     for (const output of await this.getStakedOutputs()) {
-      const outputData = await walletDB.getOutputData(output.outputHash);
-      if (outputData === null) {
-        continue;
-      }
       try {
-        const delegation = recoverStakeDelegation(
-          parseOutputHex(outputData),
-          this.keyManager.calculateNonce(PublicKey.deserialize(output.blindingKey))
-        );
-        if (delegation) {
+        const found = await this.readStakeDelegation(output);
+        if (found.status === 'delegated') {
           delegations.push({
             outputHash: output.outputHash,
             amount: output.amount,
             blockHeight: output.blockHeight,
-            ...delegation,
+            delegateKey: found.delegateKey,
+            rewardAddress: found.rewardAddress,
           });
         }
       } catch (error) {
@@ -2078,6 +2068,37 @@ export class NavioClient {
       }
     }
     return delegations;
+  }
+
+  /**
+   * Read the delegation a staked output of this wallet carries, from the
+   * serialized output sync stored. `unknown` when none was stored.
+   *
+   * @throws When the output carries a delegation payload this wallet's view
+   *   key does not open
+   */
+  private async readStakeDelegation(
+    output: WalletOutput
+  ): Promise<
+    | { status: 'delegated'; delegateKey: string; rewardAddress: string }
+    | { status: 'none' }
+    | { status: 'unknown' }
+  > {
+    if (!this.walletDB) {
+      throw new Error('Client not initialized');
+    }
+    if (!this.keyManager) {
+      throw new Error('KeyManager not available');
+    }
+    const outputData = await this.walletDB.getOutputData(output.outputHash);
+    if (outputData === null) {
+      return { status: 'unknown' };
+    }
+    const delegation = recoverStakeDelegation(
+      parseOutputHex(outputData),
+      this.keyManager.calculateNonce(PublicKey.deserialize(output.blindingKey))
+    );
+    return delegation === null ? { status: 'none' } : { status: 'delegated', ...delegation };
   }
 
   /**
