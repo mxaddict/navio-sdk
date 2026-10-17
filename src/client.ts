@@ -4484,7 +4484,7 @@ export class NavioClient {
     walletDB: IWalletDB,
     selectedUtxos?: string[],
     fundedAmount: bigint = 0n,
-  ): Promise<{ selected: WalletOutput[]; totalIn: bigint; fee: bigint }> {
+  ): Promise<{ selected: WalletOutput[]; totalIn: bigint }> {
     const allUtxos = await walletDB.getUnspentOutputs(null);
     const confirmedUtxos = allUtxos.filter((utxo) => utxo.blockHeight > 0);
 
@@ -4514,12 +4514,15 @@ export class NavioClient {
       ({ selected, totalIn } = NavioClient.selectInputs(this.selectableUtxos(confirmedUtxos), fundedAmount, false));
     }
 
-    const fee = BigInt((selected.length + 2) * DEFAULT_FEE_PER_COMPONENT);
-    if (totalIn < fundedAmount + fee) {
-      throw NavioClient.insufficientFundingError(totalIn, fundedAmount, fee);
+    // Nothing left for a fee: refuse before building outputs that overspend.
+    // Otherwise whether the inputs cover the fee is checked once the outputs
+    // are built and the real fee is known; a per-component estimate here
+    // would refuse spends whose actual fee fits.
+    if (totalIn <= fundedAmount) {
+      const estimatedFee = BigInt((selected.length + 2) * DEFAULT_FEE_PER_COMPONENT);
+      throw NavioClient.insufficientFundingError(totalIn, fundedAmount, estimatedFee);
     }
-
-    return { selected, totalIn, fee };
+    return { selected, totalIn };
   }
 
   /**

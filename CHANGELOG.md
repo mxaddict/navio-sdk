@@ -71,6 +71,12 @@ delegateKey, rewardAddress? })` stakes NAV to the wallet's staking address
   exposes for a single serialized output. `ParsedOutput` gains
   `transparentValue`, `scriptPubKeyHex`, `rangeProofHex`, `tokenIdHex` and
   `predicateHex`.
+- **Creating a collection or minting no longer refuses a spend whose fee
+  fits.** NAV funding was first checked against a rough per-component fee
+  estimate, before the transaction was built. Where that estimate exceeded the
+  fee the transaction actually needs, a wallet that could pay was told it had
+  insufficient funds. Funding is now checked against the fee of the built
+  transaction only.
 
 ## [0.3.0] - 2026-10-08
 

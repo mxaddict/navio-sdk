@@ -62,13 +62,17 @@ describe('NavioClient.delegateStake', () => {
           OutPoint.generate(CTxId.deserialize(utxo.outputHash))
         ),
     });
-    await walletDB.storeWalletOutput({
-      outputHash: '51'.repeat(32),
+    await fund('51'.repeat(32), FUNDING);
+  });
+
+  function fund(outputHash: string, amount: bigint): Promise<void> {
+    return walletDB.storeWalletOutput({
+      outputHash,
       txHash: 'cc'.repeat(32),
       outputIndex: 0,
       blockHeight: 10,
       outputData: '',
-      amount: Number(FUNDING),
+      amount: Number(amount),
       gamma: '0',
       memo: null,
       tokenId: null,
@@ -81,7 +85,7 @@ describe('NavioClient.delegateStake', () => {
       txType: 'received',
       timestamp: 0,
     });
-  });
+  }
 
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -145,6 +149,38 @@ describe('NavioClient.delegateStake', () => {
     )!;
     const nonce = keyManager.calculateNonce(PublicKey.deserialize(staked.keys!.blindingKey));
     expect(recoverStakeDelegation(staked, nonce)?.rewardAddress).toBe(reward);
+  });
+
+  it('funds a stake larger than any one output from several', async () => {
+    await fund('52'.repeat(32), 200n * NAV);
+    const result = await client.delegateStake({
+      amount: FUNDING + 100n * NAV,
+      delegateKey: Point.random().serialize(),
+    });
+
+    expect(result.inputCount).toBe(2);
+    const change = (await walletDB.getAllOutputs()).find(
+      o => o.blockHeight === 0 && !o.isStakedCommitment
+    )!;
+    expect(change.amount).toBe(FUNDING + 200n * NAV - (FUNDING + 100n * NAV) - result.fee);
+  });
+
+  it('stakes all but the fee, refusing only once the real fee does not fit', async () => {
+    // Above the per-component fee estimate for one input, which would refuse
+    // this, but below the fee the transaction actually needs.
+    const result = await client.delegateStake({
+      amount: FUNDING - 590_000n,
+      delegateKey: Point.random().serialize(),
+    });
+    expect(result.fee).toBeLessThanOrEqual(590_000n);
+
+    await walletDB.markOutputSpent('51'.repeat(32), 'dd'.repeat(32), 11);
+    await fund('53'.repeat(32), FUNDING);
+    await expect(
+      client.delegateStake({ amount: FUNDING - 1_000n, delegateKey: Point.random().serialize() })
+    ).rejects.toThrow(
+      new RegExp(`Insufficient funds: need \\d+ sat \\(${FUNDING - 1_000n} \\+ \\d+ fee\\)`)
+    );
   });
 
   it('refuses a stake below the minimum', async () => {
