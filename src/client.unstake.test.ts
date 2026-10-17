@@ -22,7 +22,6 @@ import { WalletDB } from './wallet-db';
 
 const NAV = 100_000_000n;
 const MIN_STAKE = 100n * NAV;
-const REWARD_ADDRESS = 'rnv1rewardaddress';
 
 describe('NavioClient.unstake', () => {
   let walletDB: WalletDB;
@@ -30,12 +29,14 @@ describe('NavioClient.unstake', () => {
   let syncManager: TransactionKeysSync;
   let client: NavioClient;
   let broadcast: ReturnType<typeof vi.fn>;
+  let rewardAddress: string;
   let nextTx = 1;
 
   beforeEach(async () => {
     walletDB = new WalletDB({ type: 'better-sqlite3' });
     await walletDB.open(':memory:');
     keyManager = await walletDB.createWallet(0);
+    rewardAddress = keyManager.getSubAddressBech32m({ account: 0, address: 0 }, 'regtest');
     client = new NavioClient({
       network: 'regtest',
       backend: 'electrum',
@@ -86,7 +87,7 @@ describe('NavioClient.unstake', () => {
       )
     );
     if (delegateKey !== null) {
-      output.setStakeDelegation(destination, delegateKey, REWARD_ADDRESS);
+      output.setStakeDelegation(destination, delegateKey, rewardAddress);
     }
     const fee = 1_000n;
     const unsignedTx = UnsignedTransaction.create();
@@ -177,7 +178,7 @@ describe('NavioClient.unstake', () => {
     ]);
     expect(delegationOf(restaked(result.rawTx))).toEqual({
       delegateKey: delegateKey.serialize(),
-      rewardAddress: REWARD_ADDRESS,
+      rewardAddress,
     });
   });
 
