@@ -1198,7 +1198,6 @@ export class KeyManager {
    * Load a view key from storage into memory
    * Replicates LoadViewKey from keyman.cpp
    * @param viewKey - The view key
-   * @param publicKey - The view key's public key
    * @returns True if successful
    */
   loadViewKey(viewKey: ViewKeyType): boolean {
@@ -1354,7 +1353,7 @@ export class KeyManager {
    * Add a view key and save to database
    * Replicates AddViewKey from keyman.cpp
    * @param viewKey - The view key
-   * @param publicKey - The view key's public key
+   * @param _publicKey - The view key's public key (unused)
    * @returns True if successful
    */
   addViewKey(viewKey: ViewKeyType, _publicKey: PublicKeyType): boolean {
@@ -1862,7 +1861,7 @@ export class KeyManager {
   /**
    * Check if a script belongs to this wallet
    * Replicates IsMine(script) from keyman.cpp
-   * @param script - The script
+   * @param _script - The script (unused)
    * @returns True if the script belongs to this wallet
    */
   isMineByScript(_script: Uint8Array): boolean {
@@ -2341,7 +2340,7 @@ export class KeyManager {
   /**
    * Add inactive HD chain
    * Replicates AddInactiveHDChain from keyman.cpp
-   * @param chain - The HD chain to add
+   * @param _chain - The HD chain to add (unused)
    */
   addInactiveHDChain(_chain: HDChain): void {
     // For in-memory KeyManager, we only support one active chain
@@ -2361,8 +2360,8 @@ export class KeyManager {
   /**
    * Extract spending key from script
    * Replicates ExtractSpendingKeyFromScript from keyman.cpp
-   * @param script - The script
-   * @param spendingKey - Output parameter for the spending key
+   * @param _script - The script (unused)
+   * @param _spendingKey - Output parameter for the spending key (unused)
    * @returns True if successful
    */
   extractSpendingKeyFromScript(
