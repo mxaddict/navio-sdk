@@ -1982,13 +1982,21 @@ export class NavioClient {
   }
 
   /**
+   * Staked outputs whose delegation this wallet could not read. Anyone can
+   * send an output carrying a payload it cannot open, so each is warned about
+   * once per session rather than on every {@link getStakeDelegations} call.
+   */
+  private readonly unreadableDelegationOutputs = new Set<string>();
+
+  /**
    * Get the wallet's stake delegations: the unspent staked commitments it has
    * delegated to a third-party staker, each with the staker's key and reward
    * address read back from the output. Like navio-core's `listdelegations`,
    * this works from the outputs sync already stored, so it needs no state of
    * its own and survives a restore from seed. An output is listed once it
    * confirms; mempool outputs and outputs whose serialized form the sync
-   * backend did not supply are not.
+   * backend did not supply are not. A delegation this wallet cannot read is
+   * skipped, with a warning the first time in a session.
    */
   async getStakeDelegations(): Promise<StakeDelegation[]> {
     const walletDB = this.walletDB;
@@ -2018,10 +2026,13 @@ export class NavioClient {
           });
         }
       } catch (error) {
-        console.warn(
-          `[NavioClient] Could not read the stake delegation of output ${output.outputHash.slice(0, 16)}…:`,
-          error
-        );
+        if (!this.unreadableDelegationOutputs.has(output.outputHash)) {
+          this.unreadableDelegationOutputs.add(output.outputHash);
+          console.warn(
+            `[NavioClient] Could not read the stake delegation of output ${output.outputHash.slice(0, 16)}…:`,
+            error
+          );
+        }
       }
     }
     return delegations;

@@ -3,6 +3,8 @@
  */
 
 import {
+  Address,
+  AddressEncoding,
   BlsctPredicateType,
   getPredicateType,
   isStakeDelegationDataHex,
@@ -77,7 +79,7 @@ export function isStakedCommitmentOutputHex(outputHex: string): boolean {
  * @param nonce - The output's nonce: its blinding key times the owner's view
  *   key (`KeyManager.calculateNonce`)
  * @throws When the output carries a delegation payload that the nonce does not
- *   open
+ *   open, or whose reward address does not decode on the current chain
  */
 export function recoverStakeDelegation(
   output: ParsedOutput,
@@ -95,5 +97,11 @@ export function recoverStakeDelegation(
     return null;
   }
   const { delegateKey, rewardAddress } = parseStakeDelegationOwnerInfo(dataHex, nonce);
-  return { delegateKey: delegateKey.serialize(), rewardAddress };
+  // Core round-trips the address through DecodeDestination/EncodeDestination,
+  // so any valid spelling reads back as the one the wallet itself encodes.
+  const canonicalRewardAddress = Address.encode(
+    Address.decode(rewardAddress),
+    AddressEncoding.Bech32M
+  );
+  return { delegateKey: delegateKey.serialize(), rewardAddress: canonicalRewardAddress };
 }

@@ -21,8 +21,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   decrypted from the output's delegation payload with the wallet's view key.
   Like navio-core's `listdelegations` it reads only the outputs sync stored,
   so it works after a restore from seed; a delegation shows once its output
-  confirms. `IWalletDB` gains `getOutputData(outputHash)`, which other
-  implementations of the interface must add.
+  confirms. The reward address reads back in the wallet's own spelling,
+  whichever valid encoding the payload used, and a payload the wallet cannot
+  open is skipped with one warning per session. `IWalletDB` gains
+  `getOutputData(outputHash)`, which other implementations of the interface
+  must add.
 
 ### Changed
 

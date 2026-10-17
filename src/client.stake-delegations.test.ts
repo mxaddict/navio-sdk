@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  Address,
+  AddressEncoding,
   CTxId,
   OutPoint,
   Point,
@@ -20,17 +22,18 @@ import { WalletDB } from './wallet-db';
 
 const STAKE = 10_000;
 const FEE = 1_000;
-const REWARD_ADDRESS = 'rnv1rewardaddress';
 
 describe('NavioClient.getStakeDelegations', () => {
   let walletDB: WalletDB;
   let keyManager: KeyManager;
   let client: NavioClient;
+  let rewardAddress: string;
 
   beforeEach(async () => {
     walletDB = new WalletDB({ type: 'better-sqlite3' });
     await walletDB.open(':memory:');
     keyManager = await walletDB.createWallet(0);
+    rewardAddress = keyManager.getSubAddressBech32m({ account: 0, address: 0 }, 'testnet');
     client = new NavioClient({
       network: 'testnet',
       backend: 'electrum',
@@ -50,7 +53,11 @@ describe('NavioClient.getStakeDelegations', () => {
    * Sign a transaction staking to `owner`'s staking sub-address and return its
    * staked output, delegated to `delegateKey` unless that is null.
    */
-  function stakedOutput(owner: KeyManager, delegateKey: Point | null): ParsedOutput {
+  function stakedOutput(
+    owner: KeyManager,
+    delegateKey: Point | null,
+    payloadRewardAddress = rewardAddress
+  ): ParsedOutput {
     const destination = owner.getSubAddress({ account: -2, address: 0 });
     const output = UnsignedOutput.fromTxOut(
       TxOut.generate(
@@ -65,7 +72,7 @@ describe('NavioClient.getStakeDelegations', () => {
       )
     );
     if (delegateKey !== null) {
-      output.setStakeDelegation(destination, delegateKey, REWARD_ADDRESS);
+      output.setStakeDelegation(destination, delegateKey, payloadRewardAddress);
     }
     const unsignedTx = UnsignedTransaction.create();
     const outPoint = OutPoint.generate(CTxId.deserialize('51'.repeat(32)));
@@ -115,9 +122,18 @@ describe('NavioClient.getStakeDelegations', () => {
         amount: BigInt(STAKE),
         blockHeight: 10,
         delegateKey: delegateKey.serialize(),
-        rewardAddress: REWARD_ADDRESS,
+        rewardAddress,
       },
     ]);
+  });
+
+  it('reads back the reward address as the wallet spells it', async () => {
+    const bech32 = Address.encode(Address.decode(rewardAddress), AddressEncoding.Bech32);
+    expect(bech32).not.toBe(rewardAddress);
+    await store(stakedOutput(keyManager, Point.random(), bech32));
+
+    const [delegation] = await client.getStakeDelegations();
+    expect(delegation.rewardAddress).toBe(rewardAddress);
   });
 
   it('leaves out stakes with no delegation and stakes with no stored output', async () => {
@@ -129,7 +145,7 @@ describe('NavioClient.getStakeDelegations', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('skips, with a warning, a delegation this wallet cannot open', async () => {
+  it('skips a delegation this wallet cannot open, warning once', async () => {
     const otherWallet = new WalletDB({ type: 'better-sqlite3' });
     await otherWallet.open(':memory:');
     const foreign = stakedOutput(await otherWallet.createWallet(0), Point.random());
@@ -137,6 +153,7 @@ describe('NavioClient.getStakeDelegations', () => {
     await store(foreign);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
+    expect(await client.getStakeDelegations()).toEqual([]);
     expect(await client.getStakeDelegations()).toEqual([]);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toContain(foreign.outputHash.slice(0, 16));
