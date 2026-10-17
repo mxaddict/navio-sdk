@@ -44,6 +44,8 @@ describe('recoverStakeDelegation', () => {
 
   it('refuses a nonce that does not open the payload', () => {
     const staked = outputs.find(isStakedCommitmentOutput)!;
-    expect(() => recoverStakeDelegation(staked, Point.random())).toThrow();
+    expect(() => recoverStakeDelegation(staked, Point.random())).toThrow(
+      /recover stake delegation owner info/
+    );
   });
 });
