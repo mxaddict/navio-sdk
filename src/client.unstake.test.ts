@@ -239,6 +239,22 @@ describe('NavioClient.unstake', () => {
     expect(broadcast).not.toHaveBeenCalled();
   });
 
+  it('refuses the unconfirmed rest of a partial unstake', async () => {
+    await stake(3n * MIN_STAKE, Point.random());
+    await client.unstake({ amount: MIN_STAKE });
+    broadcast.mockClear();
+    const pending = (await walletDB.getAllOutputs()).find(
+      o => o.isStakedCommitment && o.blockHeight === 0
+    )!;
+    expect(pending.outputHash).toMatch(/^mempool:/);
+
+    await expect(client.unstake()).rejects.toThrow(/No confirmed staked outputs/);
+    await expect(client.unstake({ stakedOutputs: [pending.outputHash] })).rejects.toThrow(
+      /Not a confirmed, unspent staked output/
+    );
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
   it('refuses when there is nothing staked', async () => {
     await expect(client.unstake()).rejects.toThrow(/No confirmed staked outputs/);
   });
