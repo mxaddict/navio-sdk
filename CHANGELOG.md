@@ -26,6 +26,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   open is skipped with one warning per session. `IWalletDB` gains
   `getOutputData(outputHash)`, which other implementations of the interface
   must add.
+- **Stake can be delegated (cold staking).** `delegateStake({ amount,
+delegateKey, rewardAddress? })` stakes NAV to the wallet's staking address
+  with a delegation payload for a third-party staker, as navio-core's
+  `delegatestake` does: the staker can stake the output but never spend it.
+  The reward address defaults to the wallet's primary address, when omitted
+  or empty as in `delegatestake`. Each call adds a new staked commitment;
+  existing ones are not consolidated.
+  `getMinStakeAmount()` reports the chain's minimum stake, and the
+  `minStakeAmount` config option sets it for a chain whose minimum differs
+  from the network default (navio-core's blsctregtest).
 
 ### Changed
 
@@ -62,6 +72,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   exposes for a single serialized output. `ParsedOutput` gains
   `transparentValue`, `scriptPubKeyHex`, `rangeProofHex`, `tokenIdHex` and
   `predicateHex`.
+- **Creating a collection or minting no longer refuses a spend whose fee
+  fits.** NAV funding was first checked against a rough per-component fee
+  estimate, before the transaction was built. Where that estimate exceeded the
+  fee the transaction actually needs, a wallet that could pay was told it had
+  insufficient funds. Funding is now checked against the fee of the built
+  transaction only.
 
 ## [0.3.0] - 2026-10-08
 
