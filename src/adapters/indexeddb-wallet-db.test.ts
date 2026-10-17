@@ -84,3 +84,30 @@ describe('IndexedDBWalletDB staked-commitment upgrade', () => {
     }
   });
 });
+
+describe('IndexedDBWalletDB.getOutputData', () => {
+  afterEach(async () => {
+    await IndexedDBWalletDB.deleteDatabase(PATH);
+  });
+
+  it('returns the stored serialized output, or null when there is none', async () => {
+    const walletDB = new IndexedDBWalletDB();
+    await walletDB.open(PATH);
+    try {
+      const store = (outputHash: string, outputData: string) =>
+        walletDB.storeWalletOutput({
+          ...oldRecord(outputHash, outputData, 1_000),
+          isSpent: false,
+          txType: 'received',
+        });
+      await store('07'.repeat(32), 'abcd');
+      await store('08'.repeat(32), '');
+
+      expect(await walletDB.getOutputData('07'.repeat(32))).toBe('abcd');
+      expect(await walletDB.getOutputData('08'.repeat(32))).toBeNull();
+      expect(await walletDB.getOutputData('09'.repeat(32))).toBeNull();
+    } finally {
+      await walletDB.close();
+    }
+  });
+});
