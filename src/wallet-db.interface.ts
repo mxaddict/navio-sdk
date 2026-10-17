@@ -222,6 +222,14 @@ export interface IWalletDB {
   isOutputSpentInMempool(outputHash: string): Promise<boolean>;
   getMempoolSpentTxHash(outputHash: string): Promise<string | null>;
   markOutputSpent(outputHash: string, spentTxHash: string, spentBlockHeight: number): Promise<void>;
+  /**
+   * The serialized output (hex) sync stored for an output, or null when the
+   * output is unknown or none was stored (mempool outputs, and backends that
+   * do not serve standalone outputs).
+   *
+   * @param outputHash - Output hash, display hex
+   */
+  getOutputData(outputHash: string): Promise<string | null>;
   deleteOutputsByHeight(height: number): Promise<void>;
   unspendOutputsBySpentHeight(height: number): Promise<void>;
   /**
