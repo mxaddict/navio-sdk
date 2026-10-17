@@ -257,9 +257,10 @@ export interface DelegateStakeOptions {
    */
   delegateKey: string;
   /**
-   * Address the staker is asked to pay block rewards to. Defaults to this
-   * wallet's primary receive address. Advisory only: the staker controls its
-   * own coinbase.
+   * Address the staker is asked to pay block rewards to. Defaults, when
+   * omitted or empty as in navio-core's `delegatestake`, to this wallet's
+   * primary receive address. Advisory only: the staker controls its own
+   * coinbase.
    */
   rewardAddress?: string;
   /**
@@ -2122,7 +2123,7 @@ export class NavioClient {
     }
     const delegateKey = NavioClient.parseDelegateKey(options.delegateKey);
     const rewardAddress =
-      options.rewardAddress === undefined
+      options.rewardAddress === undefined || options.rewardAddress === ''
         ? keyManager.getSubAddressBech32m({ account: 0, address: 0 }, this.getNetwork())
         : this.canonicalRewardAddress(options.rewardAddress);
     const stakeAddress = this.getStakeSubAddress();

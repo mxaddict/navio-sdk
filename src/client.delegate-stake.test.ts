@@ -151,6 +151,22 @@ describe('NavioClient.delegateStake', () => {
     expect(recoverStakeDelegation(staked, nonce)?.rewardAddress).toBe(reward);
   });
 
+  it('pays rewards to the primary address when the reward address is empty', async () => {
+    const result = await client.delegateStake({
+      amount: MIN_STAKE,
+      delegateKey: Point.random().serialize(),
+      rewardAddress: '',
+    });
+
+    const staked = parseTransaction(Buffer.from(result.rawTx, 'hex')).outputs.find(
+      isStakedCommitmentOutput
+    )!;
+    const nonce = keyManager.calculateNonce(PublicKey.deserialize(staked.keys!.blindingKey));
+    expect(recoverStakeDelegation(staked, nonce)?.rewardAddress).toBe(
+      keyManager.getSubAddressBech32m({ account: 0, address: 0 }, 'regtest')
+    );
+  });
+
   it('funds a stake larger than any one output from several', async () => {
     await fund('52'.repeat(32), 200n * NAV);
     const result = await client.delegateStake({

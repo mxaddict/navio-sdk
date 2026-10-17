@@ -30,8 +30,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 delegateKey, rewardAddress? })` stakes NAV to the wallet's staking address
   with a delegation payload for a third-party staker, as navio-core's
   `delegatestake` does: the staker can stake the output but never spend it.
-  The reward address defaults to the wallet's primary address. Each call adds
-  a new staked commitment; existing ones are not consolidated.
+  The reward address defaults to the wallet's primary address, when omitted
+  or empty as in `delegatestake`. Each call adds a new staked commitment;
+  existing ones are not consolidated.
   `getMinStakeAmount()` reports the chain's minimum stake, and the
   `minStakeAmount` config option sets it for a chain whose minimum differs
   from the network default (navio-core's blsctregtest).
