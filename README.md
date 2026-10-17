@@ -12,6 +12,7 @@ TypeScript SDK for interacting with the Navio blockchain. Provides wallet manage
 - **Balance Tracking** - Query wallet balance and UTXOs
 - **Token/NFT Transfer, Creation & Minting** - Create collections, mint assets, send tokenized outputs, and inspect owned assets
 - **RFQ Atomic-Swap Trading** - Trade tokens peer-to-peer as taker or maker over Navio's encrypted p2p messaging bus; swap halves are built and signed locally
+- **Cold Staking** - Delegate stake to a third-party staker, list delegations and unstake, with staked NAV kept out of the spendable balance
 - **Recoverable Output Blinding Keys** - Prove after the fact that this wallet created a given confidential output, and sign arbitrary messages with its blinding key, even after a seed-only restore
 - **Spending Status Tracking** - Monitor spent/unspent outputs
 - **Blockchain Reorganization Handling** - Automatic reorg detection and recovery
@@ -121,6 +122,9 @@ interface NavioClientConfig {
 
   // Output blinding keys
   deterministicBlindingKeys?: boolean; // Derive recoverable blinding keys from the seed (default: true)
+
+  // Staking
+  minStakeAmount?: bigint; // Minimum stake in sats (default: network consensus value; set it for navio-core's blsctregtest)
 }
 ```
 
@@ -236,7 +240,8 @@ Check if background sync is running.
 
 ##### `getBalance(tokenId?: string | null): Promise<bigint>`
 
-Get wallet balance in satoshis.
+Get wallet balance in satoshis. Staked NAV is not included; see
+[`getStakedBalance()`](#getstakedbalance-promisebigint).
 
 ```typescript
 // NAV balance
@@ -257,7 +262,8 @@ console.log(`Balance: ${balance.toFixed(8)} NAV`);
 
 ##### `getUnspentOutputs(tokenId?: string | null): Promise<WalletOutput[]>`
 
-Get unspent outputs (UTXOs).
+Get unspent outputs (UTXOs). Staked commitments are left out; see
+[`getStakedOutputs()`](#getstakedoutputs-promisewalletoutput).
 
 ```typescript
 interface WalletOutput {
@@ -274,6 +280,7 @@ interface WalletOutput {
   isSpent: boolean;
   spentTxHash: string | null;
   spentBlockHeight: number | null;
+  isStakedCommitment: boolean; // NAV locked for staking; not spendable until unstaked
 }
 ```
 
@@ -632,6 +639,102 @@ const { signature, blindingKey } = await client.signOutput({
 ```
 
 `blindingKey` is the **public** key the signature verifies against.
+
+#### Staking
+
+Navio is proof of stake. NAV is staked by locking it in a _staked commitment_,
+an output only a staking or unstaking transaction can spend. A light wallet
+cannot stake itself, so it delegates: the staked commitment carries an
+encrypted payload that lets a third-party staker stake it, while the wallet
+keeps the spending keys and can unstake at any time. These methods mirror
+navio-core's `delegatestake`, `listdelegations` and `stakeunlock`. See
+[Cold Staking](#cold-staking) for a walkthrough.
+
+Staked commitments are never counted in `getBalance()` or `getUnspentOutputs()`,
+and coin selection never picks them, for sends, token fees and RFQ swaps alike.
+
+##### `getMinStakeAmount(): bigint`
+
+The minimum stake in satoshis on this client's chain: `minStakeAmount` from the
+config, else the network's consensus minimum (10,000 NAV on mainnet, testnet,
+signet and regtest). navio-core's blsctregtest chain uses 100 NAV but shares the
+regtest address prefix, so a client on it must set `minStakeAmount: 100n * 100_000_000n`.
+A staked output's range proof is built against this value and the node checks
+it against its own, so the two must match.
+
+##### `getStakedOutputs(): Promise<WalletOutput[]>`
+
+The wallet's unspent staked commitments, confirmed and in the mempool.
+
+##### `getStakedBalance(): Promise<bigint>`
+
+The NAV locked in those commitments, in satoshis.
+
+##### `getStakeDelegations(): Promise<StakeDelegation[]>`
+
+The wallet's delegated staked commitments, read back from the outputs sync
+stored, so this survives a restore from seed.
+
+```typescript
+interface StakeDelegation {
+  outputHash: string; // The delegated staked output
+  amount: bigint; // Staked amount in sats
+  blockHeight: number; // Height of the confirming block
+  delegateKey: string; // The staker's delegation public key (G1 point, hex)
+  rewardAddress: string; // Where the staker is asked to pay rewards (the wallet's own spelling)
+}
+```
+
+A delegation is listed once its output confirms. A payload the wallet cannot
+open is skipped, with one warning per session.
+
+##### `delegateStake(options: DelegateStakeOptions): Promise<SendTransactionResult>`
+
+Stake NAV and delegate it to a staker.
+
+```typescript
+const { txId, fee } = await client.delegateStake({
+  amount: 10_000n * 100_000_000n, // at least getMinStakeAmount()
+  delegateKey: stakerKeyHex, // 48-byte G1 point (hex), published by the staking operator
+  rewardAddress: myAddress, // optional; defaults to the wallet's primary address
+});
+```
+
+| Option               | Meaning                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| `amount`             | Sats to stake, at least `getMinStakeAmount()`. The fee is paid on top, from spendable NAV. |
+| `delegateKey`        | The staker's delegation public key. The identity point is refused.                         |
+| `rewardAddress`      | Advisory: the staker controls its own coinbase. Omitted or `''` means the primary address. |
+| `selectedUtxos`      | Optional outputHashes to fund the stake and fee from (confirmed, unspent, not staked).     |
+| `randomBlindingKeys` | Opt out of recoverable blinding keys, as for `sendTransaction`.                            |
+
+Each call adds a new staked commitment; unlike `delegatestake`, existing ones
+are not folded in. Transparent reward addresses are not supported.
+
+##### `unstake(options?: UnstakeOptions): Promise<SendTransactionResult>`
+
+Spend staked commitments back into spendable NAV. This also revokes their
+delegation.
+
+```typescript
+// Unstake everything that is confirmed
+await client.unstake();
+
+// Unlock 2,000 NAV (fee included) from specific commitments; the rest stays staked
+await client.unstake({ stakedOutputs: [outputHash], amount: 2_000n * 100_000_000n });
+```
+
+| Option          | Meaning                                                                               |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `stakedOutputs` | outputHashes of the commitments to spend. Default: every confirmed staked commitment. |
+| `amount`        | Sats to unlock, fee included. Default: all of the spent commitments.                  |
+
+The unlocked NAV, less the fee, arrives as a normal output on the wallet's
+staking address. A partial unstake stakes the rest again, which must reach the
+minimum stake. Unlike `stakeunlock`, it keeps the delegation the spent
+commitments share, and refuses commitments delegated differently or whose
+delegation it cannot read. Only confirmed commitments can be unstaked, so the
+restaked remainder of a partial unstake becomes available once it confirms.
 
 #### Chain & Metadata
 
@@ -1394,6 +1497,42 @@ await client.forgetStandingOrder(orders[0].localId); // release the coins locall
 Maker halves spend wallet coins that are **not locked** while a quote or
 order is outstanding — don't spend them manually until it expires, or the
 swap will fail to confirm.
+
+### Cold Staking
+
+Delegate stake to a staking operator, check it, and take it back.
+
+```typescript
+const NAV = 100_000_000n;
+
+await client.sync();
+console.log('Spendable:', await client.getBalance());
+
+// 1. Stake 10,000 NAV with an operator's delegation key
+const { txId } = await client.delegateStake({
+  amount: 10_000n * NAV,
+  delegateKey: operatorKeyHex,
+});
+console.log('Staked in', txId);
+
+// 2. After the transaction confirms and the wallet has synced
+await client.sync();
+console.log('Staked:', await client.getStakedBalance());
+for (const d of await client.getStakeDelegations()) {
+  console.log(d.outputHash, d.amount, 'delegated to', d.delegateKey, 'rewards to', d.rewardAddress);
+}
+
+// 3. Take some back; the rest stays staked under the same delegation
+await client.unstake({ amount: 2_000n * NAV });
+
+// 4. Later, once the restaked remainder has confirmed and synced, unstake the rest
+await client.sync();
+await client.unstake();
+```
+
+The operator stakes the commitment but can never spend it: only this wallet's
+keys can unstake. Rewards go wherever the operator pays them; `rewardAddress`
+is a request, not something the protocol enforces.
 
 ### Query Wallet Outputs
 

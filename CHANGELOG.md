@@ -3,7 +3,7 @@
 All notable changes to navio-sdk are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-17
 
 ### Added
 
@@ -46,6 +46,12 @@ delegateKey, rewardAddress? })` stakes NAV to the wallet's staking address
 
 ### Changed
 
+- **Breaking for custom integrations.** `WalletOutput.isStakedCommitment` is a
+  new required field, so code that builds `WalletOutput` objects must set it.
+  Custom `IWalletDB` implementations must add `getOutputData(outputHash)` and
+  leave staked commitments out of `getBalance()` and `getUnspentOutputs()`.
+  The built-in `WalletDB` and `IndexedDBWalletDB` do both and upgrade existing
+  databases on open.
 - **`getBalance()` and `getUnspentOutputs()` leave staked commitments out**
   (the client methods and the `IWalletDB` implementations alike), and coin
   selection no longer picks them, for sends, token fees, RFQ swaps and
