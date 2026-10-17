@@ -10,6 +10,10 @@ import {
   Scalar,
   TokenId,
   TxIn,
+  TxOut,
+  TxOutputType,
+  parseDataPredicateData,
+  parseStakeDelegationOwnerInfo,
 } from '@nav-io/navio-blsct';
 import { NavioClient } from './client';
 import type { KeyManager } from './key-manager';
@@ -144,11 +148,17 @@ describe('NavioClient.delegateStake', () => {
       rewardAddress: reward.toUpperCase(),
     });
 
+    // Read the payload directly: recoverStakeDelegation would canonicalise a
+    // non-canonical address on the way out and hide a regression here.
     const staked = parseTransaction(Buffer.from(result.rawTx, 'hex')).outputs.find(
       isStakedCommitmentOutput
     )!;
     const nonce = keyManager.calculateNonce(PublicKey.deserialize(staked.keys!.blindingKey));
-    expect(recoverStakeDelegation(staked, nonce)?.rewardAddress).toBe(reward);
+    const payload = parseStakeDelegationOwnerInfo(
+      parseDataPredicateData(staked.predicateHex!),
+      nonce
+    );
+    expect(payload.rewardAddress).toBe(reward);
   });
 
   it('pays rewards to the primary address when the reward address is empty', async () => {
@@ -165,6 +175,17 @@ describe('NavioClient.delegateStake', () => {
     expect(recoverStakeDelegation(staked, nonce)?.rewardAddress).toBe(
       keyManager.getSubAddressBech32m({ account: 0, address: 0 }, 'regtest')
     );
+  });
+
+  it("proves the stake's range against the chain's minimum stake", async () => {
+    const toUnsignedOutput = vi.spyOn(client as any, 'toUnsignedOutput');
+    await client.delegateStake({ amount: MIN_STAKE, delegateKey: Point.random().serialize() });
+
+    const stakedTxOuts = toUnsignedOutput.mock.calls
+      .map(([txOut]) => txOut as InstanceType<typeof TxOut>)
+      .filter(txOut => txOut.getOutputType() === TxOutputType.StakedCommitment);
+    expect(stakedTxOuts).toHaveLength(1);
+    expect(stakedTxOuts[0].getMinStake()).toBe(MIN_STAKE);
   });
 
   it('funds a stake larger than any one output from several', async () => {
@@ -217,17 +238,20 @@ describe('NavioClient.delegateStake', () => {
 
   it('refuses a reward address with null keys or from another network', async () => {
     const identity = 'c0' + '00'.repeat(47);
-    const nullKeys = Address.encode(
-      DoublePublicKey.deserialize(identity + Point.random().serialize()),
-      AddressEncoding.Bech32M
-    );
-    await expect(
-      client.delegateStake({
-        amount: MIN_STAKE,
-        delegateKey: Point.random().serialize(),
-        rewardAddress: nullKeys,
-      })
-    ).rejects.toThrow(/null keys/);
+    // The view key, then the spend key: either one null is refused.
+    for (const keys of [
+      identity + Point.random().serialize(),
+      Point.random().serialize() + identity,
+    ]) {
+      const nullKeys = Address.encode(DoublePublicKey.deserialize(keys), AddressEncoding.Bech32M);
+      await expect(
+        client.delegateStake({
+          amount: MIN_STAKE,
+          delegateKey: Point.random().serialize(),
+          rewardAddress: nullKeys,
+        })
+      ).rejects.toThrow(/null keys/);
+    }
 
     const mainnetAddress = keyManager.getSubAddressBech32m({ account: 0, address: 0 }, 'mainnet');
     await expect(
