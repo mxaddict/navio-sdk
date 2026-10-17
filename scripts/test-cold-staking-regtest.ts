@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   let failed = false;
   try {
     assertEq((await node.rpc('getblockchaininfo')).chain, 'blsctregtest', 'node chain');
-    await node.rpc('createwallet', [NODE_WALLET]);
+    await openNodeWallet(node);
     const nodeAddr: string = await node.rpc('getnewaddress', ['', 'blsct'], NODE_WALLET);
     await node.rpc('generatetoblsctaddress', [101, nodeAddr]);
 
@@ -110,10 +110,16 @@ async function main(): Promise<void> {
     assertEq(delegations[0].delegateKey, delegateKey, 'the rest keeps the delegation');
 
     console.log('== 4. Unstake the rest');
+    const balanceBeforeFull = await client.getBalance();
     const full = await client.unstake();
     await expectAccepted(node, full, 'full unstake');
     await mine(node, nodeAddr, client);
     assertEq(await client.getStakedBalance(), 0n, 'nothing left staked');
+    assertEq(
+      await client.getBalance(),
+      balanceBeforeFull + stakeAmount - MIN_STAKE - full.fee,
+      'spendable balance gains the rest less the fee'
+    );
     assertEq((await client.getStakeDelegations()).length, 0, 'no delegations left');
 
     console.log(`\nALL ${assertionsPassed()} ASSERTIONS PASSED`);
@@ -129,6 +135,21 @@ async function main(): Promise<void> {
       }
     }
     await node.stop(failed && KEEP_DATADIR_ON_FAILURE);
+  }
+}
+
+/**
+ * Use the node's wallet, loading it or creating it as needed, so the script
+ * can run again against an attached node that already has it.
+ */
+async function openNodeWallet(node: RegtestNode): Promise<void> {
+  const loaded: string[] = await node.rpc('listwallets');
+  if (loaded.includes(NODE_WALLET)) return;
+  const onDisk: { wallets: { name: string }[] } = await node.rpc('listwalletdir');
+  if (onDisk.wallets.some(wallet => wallet.name === NODE_WALLET)) {
+    await node.rpc('loadwallet', [NODE_WALLET]);
+  } else {
+    await node.rpc('createwallet', [NODE_WALLET]);
   }
 }
 
