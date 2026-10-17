@@ -13,7 +13,8 @@ import { join } from 'node:path';
 // Regtest node helper
 // ---------------------------------------------------------------------------
 
-const DEFAULT_NAVIOD = process.env.NAVIOD ?? '/Users/alex/dev/navio-p2pmsg-int/build/bin/naviod';
+/** The naviod binary: NAVIOD, else `naviod` on PATH. */
+const DEFAULT_NAVIOD = process.env.NAVIOD ?? 'naviod';
 const RPC_USER = 'user';
 const RPC_PASS = 'pass';
 
@@ -50,17 +51,24 @@ export interface RegtestNode {
 }
 
 function supportedFlags(binary: string): Set<string> {
-  const help = execFileSync(binary, ['-help', '-help-debug'], {
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-  });
+  let help: string;
+  try {
+    help = execFileSync(binary, ['-help', '-help-debug'], {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`naviod not found at "${binary}": set NAVIOD to its path or put it on PATH`);
+    }
+    throw e;
+  }
   const set = new Set<string>();
   for (const m of help.matchAll(/^\s{2}(-[a-zA-Z0-9]+)/gm)) set.add(m[1]);
   return set;
 }
 
-function filterArgs(binary: string, args: string[]): string[] {
-  const ok = supportedFlags(binary);
+function filterArgs(ok: Set<string>, args: string[]): string[] {
   const out: string[] = [];
   for (const a of args) {
     const name = a.split('=')[0];
@@ -131,8 +139,9 @@ function rpcClient(rpcPort: number): RegtestNode['rpc'] {
  * Attach to a blsctregtest node that is already running, rather than spawn
  * one, when NAVIO_REGTEST_P2P_PORT and NAVIO_REGTEST_RPC_PORT are set: for a
  * node the script cannot start itself, such as one in WSL or a container. It
- * must be a fresh chain with RPC credentials user/pass, listening on
- * 127.0.0.1. stop() leaves it running.
+ * must use RPC credentials user/pass and listen on 127.0.0.1. stop() leaves
+ * it running. test-p2p-regtest.ts creates its node wallet, so it needs a
+ * fresh chain; test-cold-staking-regtest.ts reuses the wallet if it exists.
  */
 function attachedNode(): RegtestNode | null {
   const p2p = process.env.NAVIO_REGTEST_P2P_PORT;
@@ -158,8 +167,11 @@ export async function startRegtestNode(binary = DEFAULT_NAVIOD): Promise<Regtest
 
   const port = await getFreePort();
   const rpcPort = await getFreePort();
+  // Probe the binary before creating the datadir, so a missing one leaves
+  // nothing behind.
+  const supported = supportedFlags(binary);
   const datadir = mkdtempSync(join(tmpdir(), 'navio-sdk-regtest-'));
-  const args = filterArgs(binary, [
+  const args = filterArgs(supported, [
     ...BASE_ARGS,
     `-datadir=${datadir}`,
     `-bind=127.0.0.1:${port}`,
