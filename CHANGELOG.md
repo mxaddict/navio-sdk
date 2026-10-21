@@ -3,6 +3,17 @@
 All notable changes to navio-sdk are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Concurrent first requests on an `ElectrumClient` share one connection.**
+  The client connects on its first request; two requests made before the
+  connection was up each opened a socket, and those sent on the socket still
+  connecting failed with `WebSocket is not open`. Loading token and NFT
+  balances together hit this on the client's token-registry connection, so a
+  collection's name could fail to load.
+
 ## [0.4.0] - 2026-10-17
 
 ### Added
