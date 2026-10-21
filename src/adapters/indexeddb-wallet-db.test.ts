@@ -111,3 +111,35 @@ describe('IndexedDBWalletDB.getOutputData', () => {
     }
   });
 });
+
+describe('IndexedDBWalletDB token registry cache', () => {
+  afterEach(async () => {
+    await IndexedDBWalletDB.deleteDatabase(PATH);
+  });
+
+  it('stores an entry and replaces it by public token id', async () => {
+    const entry = {
+      publicTokenId: 'ab'.repeat(32),
+      kind: 'nft' as const,
+      metadata: { name: 'Collection' },
+      totalSupply: '18446744073709551615',
+      mintedNft: { '1': { name: 'First' } },
+      fetchedAt: 1_700_000_000_000,
+    };
+    const walletDB = new IndexedDBWalletDB();
+    await walletDB.open(PATH);
+    try {
+      expect(await walletDB.getTokenRegistryEntry(entry.publicTokenId)).toBeNull();
+
+      await walletDB.saveTokenRegistryEntry(entry);
+      expect(await walletDB.getTokenRegistryEntry(entry.publicTokenId)).toEqual(entry);
+
+      const updated = { ...entry, mintedNft: { ...entry.mintedNft, '2': { name: 'Second' } } };
+      await walletDB.saveTokenRegistryEntry(updated);
+      expect(await walletDB.getTokenRegistryEntry(entry.publicTokenId)).toEqual(updated);
+      expect(await walletDB.getTokenRegistryEntry('cd'.repeat(32))).toBeNull();
+    } finally {
+      await walletDB.close();
+    }
+  });
+});

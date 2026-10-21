@@ -24,13 +24,14 @@ import type {
   WalletMetadata,
   StoreOutputParams,
   TxType,
-  CreatedCollectionRecord, SubAddressEntry, StandingOrderRow } from '../wallet-db.interface';
+  CreatedCollectionRecord, SubAddressEntry, StandingOrderRow, TokenRegistryEntry } from '../wallet-db.interface';
 
 // v2: adds the createdCollections store
 // v3: adds the standingOrders store
 // v4: adds the outputBlindingKeys store
 // v5: walletOutputs records carry isStakedCommitment (backfilled on upgrade)
-const IDB_VERSION = 5;
+// v6: adds the tokenRegistry store
+const IDB_VERSION = 6;
 const DEFAULT_TOKEN_ID = '0000000000000000000000000000000000000000000000000000000000000000';
 
 function idbReq<T>(req: IDBRequest<T>): Promise<T> {
@@ -129,6 +130,7 @@ export class IndexedDBWalletDB implements IWalletDB {
       ['createdCollections', { keyPath: 'collectionTokenId' }],
       ['standingOrders', { keyPath: 'localId' }],
       ['outputBlindingKeys', { keyPath: 'outputHash' }],
+      ['tokenRegistry', { keyPath: 'publicTokenId' }],
     ];
     for (const [name, opts] of stores) {
       if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, opts);
@@ -850,6 +852,14 @@ export class IndexedDBWalletDB implements IWalletDB {
 
   async saveCreatedCollection(record: CreatedCollectionRecord): Promise<void> {
     await this.put('createdCollections', { ...record });
+  }
+
+  async saveTokenRegistryEntry(entry: TokenRegistryEntry): Promise<void> {
+    await this.put('tokenRegistry', { ...entry });
+  }
+
+  async getTokenRegistryEntry(publicTokenId: string): Promise<TokenRegistryEntry | null> {
+    return (await this.get<TokenRegistryEntry>('tokenRegistry', publicTokenId)) ?? null;
   }
 
   async saveOutputBlindingKey(outputHash: string, blindingKeyPrivate: string): Promise<void> {
