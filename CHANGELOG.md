@@ -15,7 +15,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
   minted entries, is shown at once and refreshed in the background after five
   minutes. Collections are looked up in parallel, once each, and concurrent
   balance calls share a lookup in flight. SQLite gains a `token_registry`
-  table and the IndexedDB database moves to version 6.
+  table and the IndexedDB database moves to version 9.
 
 ### Breaking
 

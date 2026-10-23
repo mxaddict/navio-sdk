@@ -30,8 +30,10 @@ import type {
 // v3: adds the standingOrders store
 // v4: adds the outputBlindingKeys store
 // v5: walletOutputs records carry isStakedCommitment (backfilled on upgrade)
-// v6: adds the tokenRegistry store
-const IDB_VERSION = 6;
+// v6-v8: taken by changes in review (blinding generations, swap intents,
+// amount records)
+// v9: adds the tokenRegistry store
+const IDB_VERSION = 9;
 const DEFAULT_TOKEN_ID = '0000000000000000000000000000000000000000000000000000000000000000';
 
 function idbReq<T>(req: IDBRequest<T>): Promise<T> {
